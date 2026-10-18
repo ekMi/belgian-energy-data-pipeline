@@ -133,6 +133,66 @@ def classify_incoming(conn, checksum, sample_size=5):
     return PreviewResult(checksum, total, new, unchanged, changed, samples)
 
 
+def archive_corrections(conn, batch_id, *, extracted_at=None):
+    """Lock current rows, reject known stale inputs and archive before UPDATE."""
+    conn.execute(
+        f"SELECT existing.timestamp_utc FROM staging.elia_load existing "
+        "JOIN pg_temp.ods001_preview incoming USING (timestamp_utc,resolution_code) "
+        f"WHERE {DISTINCT_MEASURES} FOR UPDATE OF existing"
+    )
+    if extracted_at is not None:
+        stale = conn.execute(
+            f"SELECT count(*) FROM staging.elia_load existing "
+            "JOIN pg_temp.ods001_preview incoming USING (timestamp_utc,resolution_code) "
+            f"WHERE {DISTINCT_MEASURES} AND EXISTS ("
+            "SELECT 1 FROM staging.ingestion_batch b WHERE b.extracted_at > %s AND ("
+            "b.batch_id=existing.ingestion_batch_id OR EXISTS ("
+            "SELECT 1 FROM staging.elia_load_correction h "
+            "WHERE h.timestamp_utc=existing.timestamp_utc "
+            "AND h.resolution_code=existing.resolution_code "
+            "AND b.batch_id IN (h.previous_batch_id,h.correction_batch_id))))",
+            (extracted_at,),
+        ).fetchone()[0]
+        if stale:
+            raise ValueError(
+                f"Stale extraction: {stale} corrections predate known versions"
+            )
+    names = ", ".join(
+        ["timestamp_utc", "resolution_code", "previous_batch_id", "correction_batch_id"]
+        + ["old_" + m for m in MEASURES]
+        + ["new_" + m for m in MEASURES]
+    )
+    values = ", ".join(
+        ["existing." + m for m in MEASURES] + ["incoming." + m for m in MEASURES]
+    )
+    return conn.execute(
+        f"INSERT INTO staging.elia_load_correction ({names}) "
+        f"SELECT existing.timestamp_utc,existing.resolution_code,"
+        f"existing.ingestion_batch_id,%s,{values} FROM staging.elia_load existing "
+        "JOIN pg_temp.ods001_preview incoming USING (timestamp_utc,resolution_code) "
+        f"WHERE {DISTINCT_MEASURES}",
+        (batch_id,),
+    ).rowcount
+
+
+def update_corrections(conn, batch_id):
+    """Apply only this batch's archived changes, checking the old version."""
+    assignments = ", ".join(m + "=history.new_" + m for m in MEASURES)
+    old_row = ", ".join("history.old_" + m for m in MEASURES)
+    current_row = ", ".join("existing." + m for m in MEASURES)
+    return conn.execute(
+        f"UPDATE staging.elia_load existing SET {assignments}, "
+        "ingestion_batch_id=history.correction_batch_id "
+        "FROM staging.elia_load_correction history "
+        "WHERE history.correction_batch_id=%s "
+        "AND existing.timestamp_utc=history.timestamp_utc "
+        "AND existing.resolution_code=history.resolution_code "
+        "AND existing.ingestion_batch_id=history.previous_batch_id "
+        f"AND ROW({current_row}) IS NOT DISTINCT FROM ROW({old_row})",
+        (batch_id,),
+    ).rowcount
+
+
 def preview_csv(path: Path, *, sample_size: int = 5) -> PreviewResult:
     """Own a fresh connection and always roll back its temporary-table transaction."""
     if (

@@ -165,3 +165,12 @@ rejects entire batches containing CHANGED rows. No correction history is written
 
 The original no-argument command remains supported. The D3 guide supersedes
 earlier step-C/D1 descriptions of ingestion behavior.
+
+## Authorized corrections (D4)
+
+[Review the D4 authorization, freshness and history contract](docs/authorized_corrections.md).
+Corrections remain rejected by default. Explicit authorization binds the exact
+CSV SHA-256 to a mandatory justification. History, updates, inserts, quality
+reports and SUCCESS are committed atomically using the existing schema 04.
+No migration is executed by the application. This supersedes earlier D3-only
+descriptions that all corrections are unconditionally rejected.

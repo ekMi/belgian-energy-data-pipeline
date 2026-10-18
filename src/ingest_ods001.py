@@ -1,6 +1,7 @@
-"""ODS001 ingestion: insert new rows, retain unchanged rows, reject corrections."""
+"""ODS001 ingestion with explicit file-bound, historized corrections."""
 
 import argparse
+import re
 import sys
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -9,7 +10,12 @@ from pathlib import Path
 import psycopg
 
 from config import CSV_PATH, get_connection_params
-from merge_ods001 import classify_incoming, load_incoming
+from merge_ods001 import (
+    archive_corrections,
+    classify_incoming,
+    load_incoming,
+    update_corrections,
+)
 from quality_ods001 import QualityResult, evaluate_quality, has_errors
 from quality_store import COLUMNS, save_results
 from validate_ods001 import calculate_sha256
@@ -19,7 +25,7 @@ INGESTION_LOCK = (81001, 1)
 
 
 class ChangedObservationsError(ValueError):
-    """D3 never updates existing business values."""
+    """Changed observations require explicit file-bound authorization."""
 
 
 @contextmanager
@@ -46,11 +52,38 @@ def ingestion_lock(conn):
             )
 
 
-def ingest_csv(path: Path, *, input_scope: str = "continuous") -> int | None:
+def validate_authorization(authorized_sha256, correction_reason, extracted_at):
+    if authorized_sha256 is None:
+        if correction_reason is not None:
+            raise ValueError("correction_reason requires authorized_sha256")
+    elif (
+        re.fullmatch(r"[0-9a-f]{64}", authorized_sha256) is None
+        or correction_reason is None
+        or not correction_reason.strip()
+    ):
+        raise ValueError(
+            "Authorization requires a lowercase SHA-256 and a nonempty justification"
+        )
+    if extracted_at is not None and extracted_at.utcoffset() is None:
+        raise ValueError("extracted_at requires an explicit UTC offset")
+
+
+def ingest_csv(
+    path: Path,
+    *,
+    input_scope: str = "continuous",
+    authorized_sha256: str | None = None,
+    correction_reason: str | None = None,
+    extracted_at: datetime | None = None,
+    source_reference: str | None = None,
+) -> int | None:
     if input_scope not in ("continuous", "partial"):
         raise ValueError("input_scope must be continuous or partial")
+    validate_authorization(authorized_sha256, correction_reason, extracted_at)
     with psycopg.connect(**get_connection_params()) as conn, ingestion_lock(conn):
         checksum = calculate_sha256(path)
+        if authorized_sha256 is not None and authorized_sha256 != checksum:
+            raise ValueError("Authorization SHA-256 does not match the input file")
         existing = conn.execute(
             "SELECT batch_id FROM staging.ingestion_batch "
             "WHERE file_sha256=%s AND status='SUCCESS' LIMIT 1",
@@ -61,9 +94,19 @@ def ingest_csv(path: Path, *, input_scope: str = "continuous") -> int | None:
             return None
         batch_id = conn.execute(
             "INSERT INTO staging.ingestion_batch "
-            "(source_file,file_sha256,started_at,input_scope,correction_policy) "
-            "VALUES (%s,%s,clock_timestamp(),%s,'deny') RETURNING batch_id",
-            (path.name, checksum, input_scope),
+            "(source_file,file_sha256,started_at,input_scope,correction_policy,"
+            "correction_authorized_sha256,correction_reason,extracted_at,source_reference) "
+            "VALUES (%s,%s,clock_timestamp(),%s,%s,%s,%s,%s,%s) RETURNING batch_id",
+            (
+                path.name,
+                checksum,
+                input_scope,
+                "authorized" if authorized_sha256 else "deny",
+                authorized_sha256,
+                correction_reason,
+                extracted_at,
+                source_reference,
+            ),
         ).fetchone()[0]
         conn.commit()
         as_of = datetime.now(UTC)
@@ -84,7 +127,7 @@ def ingest_csv(path: Path, *, input_scope: str = "continuous") -> int | None:
                 results = evaluate_quality(
                     records, as_of=as_of, check_continuity=continuity
                 )
-                if classification.rows_changed:
+                if classification.rows_changed and authorized_sha256 is None:
                     results.append(
                         QualityResult(
                             "technical.corrections_forbidden",
@@ -99,10 +142,20 @@ def ingest_csv(path: Path, *, input_scope: str = "continuous") -> int | None:
                         )
                     )
                     raise ChangedObservationsError(
-                        f"{classification.rows_changed} changed observations; D3 rejects corrections"
+                        f"{classification.rows_changed} changed observations; explicit authorization required"
                     )
                 if has_errors(results):
                     raise ValueError("Blocking data quality errors")
+                updated = 0
+                if classification.rows_changed:
+                    archived = archive_corrections(
+                        conn, batch_id, extracted_at=extracted_at
+                    )
+                    if archived != classification.rows_changed:
+                        raise ValueError("Archived correction count mismatch")
+                    updated = update_corrections(conn, batch_id)
+                    if updated != archived:
+                        raise ValueError("Updated correction count mismatch")
                 inserted = conn.execute(
                     f"INSERT INTO staging.elia_load ({COLUMNS},ingestion_batch_id) "
                     f"SELECT {', '.join('i.' + c for c in COLUMNS.split(', '))},%s "
@@ -124,12 +177,13 @@ def ingest_csv(path: Path, *, input_scope: str = "continuous") -> int | None:
                 conn.execute(
                     "UPDATE staging.ingestion_batch SET status='SUCCESS',"
                     "finished_at=clock_timestamp(),rows_loaded=%s,rows_received=%s,"
-                    "rows_inserted=%s,rows_unchanged=%s,rows_updated=0 WHERE batch_id=%s",
+                    "rows_inserted=%s,rows_unchanged=%s,rows_updated=%s WHERE batch_id=%s",
                     (
                         received,
                         received,
                         inserted,
                         classification.rows_unchanged,
+                        updated,
                         batch_id,
                     ),
                 )
@@ -189,8 +243,19 @@ def main() -> None:
     parser.add_argument(
         "--input-scope", choices=("continuous", "partial"), default="continuous"
     )
+    parser.add_argument("--authorize-sha256")
+    parser.add_argument("--correction-reason")
+    parser.add_argument("--extracted-at", type=datetime.fromisoformat)
+    parser.add_argument("--source-reference")
     args = parser.parse_args()
-    count = ingest_csv(args.csv_path, input_scope=args.input_scope)
+    count = ingest_csv(
+        args.csv_path,
+        input_scope=args.input_scope,
+        authorized_sha256=args.authorize_sha256,
+        correction_reason=args.correction_reason,
+        extracted_at=args.extracted_at,
+        source_reference=args.source_reference,
+    )
     if count is not None:
         print(f"Ingestion successful: {count:,} accepted rows")
 
