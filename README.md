@@ -1,4 +1,4 @@
-﻿# Belgian Energy Data Pipeline
+# Belgian Energy Data Pipeline
 
 Python and PostgreSQL pipeline for Belgian electricity grid data published by
 Elia. The project progressively targets an analytical PostgreSQL model, Power BI,
@@ -7,7 +7,8 @@ and possible future Microsoft Fabric integration.
 ## Status
 
 Phase 01 (source qualification and initial storage) is complete. Phase 02, step A
-consolidates configuration, CSV parsing and unit tests. Incremental loading,
+consolidates configuration, CSV parsing and unit tests. Step B adds PostgreSQL 18
+integration tests with an explicitly isolated test database. Incremental loading,
 persistent quality results and correction history are not implemented.
 
 Source: Elia ODS001, https://opendata.elia.be/explore/dataset/ods001/
@@ -44,6 +45,11 @@ profiling, pytest for tests and Ruff for linting and formatting.
     tests/unit/
         test_config.py
         test_validate_ods001.py
+        test_postgres_safety.py
+    tests/integration/
+        conftest.py
+        test_ingestion.py
+    tests/postgres_support.py      Database identity safety guard
     data/raw/                     Local immutable source exports
     data/processed/               Reserved for derived local files
     docs/                         Reserved for further documentation
@@ -112,8 +118,9 @@ Parsing and database errors roll back the transaction.
 
 Unit tests cover configuration, headers, missing data, hashing and row parsing,
 including UTC conversion, required fields, NULLs and nonfinite numbers. They do
-not require PostgreSQL. Integration tests remain deferred to step B and must use
-an explicitly isolated test database.
+not require PostgreSQL. Integration tests require the dedicated PostgreSQL 18
+database described in [the integration test guide](docs/integration_tests.md).
+Missing TEST_PG configuration produces explicit skips, not successful tests.
 
 - Failed loads currently roll back their tracking record too; FAILED batches
   are not persisted. Transaction timestamps do not measure elapsed duration.
