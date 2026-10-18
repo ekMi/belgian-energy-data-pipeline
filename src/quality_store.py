@@ -9,7 +9,9 @@ COLUMNS = (
 )
 
 
-def save_results(conn, batch_id, results, *, as_of, scope, continuity=True):
+def save_results(
+    conn, batch_id, results, *, as_of, scope, continuity=True, parameters=None
+):
     run_id = conn.execute(
         "INSERT INTO staging.quality_run (batch_id, as_of, scope, parameters) "
         "VALUES (%s,%s,%s,%s) RETURNING quality_run_id",
@@ -24,6 +26,7 @@ def save_results(conn, batch_id, results, *, as_of, scope, continuity=True):
                     "outlier_min_samples": 20,
                     "outlier_mad_multiplier": 6,
                     "mad_scale": 1.4826,
+                    **(parameters or {}),
                 }
             ),
         ),

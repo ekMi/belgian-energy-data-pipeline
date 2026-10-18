@@ -65,7 +65,7 @@ def test_single_measure_history(test_database, csv_file, rows, index):
     assert after[0][index] == 42
     assert (
         test_database.execute(
-            "SELECT * FROM staging.quality_result WHERE quality_run_id=1 ORDER BY quality_run_id,check_id"
+            "SELECT * FROM staging.quality_result WHERE quality_run_id IN (SELECT quality_run_id FROM staging.quality_run WHERE batch_id=1) ORDER BY quality_run_id,check_id"
         ).fetchall()
         == reports
     )

@@ -10,6 +10,7 @@ from pathlib import Path
 import psycopg
 
 from config import CSV_PATH, get_connection_params
+from consolidated_quality import check_consolidated
 from merge_ods001 import (
     archive_corrections,
     classify_incoming,
@@ -111,6 +112,8 @@ def ingest_csv(
         conn.commit()
         as_of = datetime.now(UTC)
         results = []
+        consolidated = None
+        consolidated_parameters = None
         received = None
         continuity = input_scope == "continuous"
         try:
@@ -166,6 +169,11 @@ def ingest_csv(
                 ).rowcount
                 if inserted != classification.rows_new:
                     raise ValueError("Inserted row count mismatch")
+                consolidated, consolidated_parameters = check_consolidated(
+                    conn, as_of=as_of
+                )
+                if has_errors(consolidated):
+                    raise ValueError("Blocking consolidated quality errors")
                 save_results(
                     conn,
                     batch_id,
@@ -173,6 +181,15 @@ def ingest_csv(
                     as_of=as_of,
                     scope="incoming_file",
                     continuity=continuity,
+                )
+                save_results(
+                    conn,
+                    batch_id,
+                    consolidated,
+                    as_of=as_of,
+                    scope="consolidated_range",
+                    continuity=True,
+                    parameters=consolidated_parameters,
                 )
                 conn.execute(
                     "UPDATE staging.ingestion_batch SET status='SUCCESS',"
@@ -229,6 +246,20 @@ def ingest_csv(
                             scope="failed_attempt",
                             continuity=continuity,
                         )
+                    if consolidated is not None:
+                        with conn.transaction():
+                            save_results(
+                                conn,
+                                batch_id,
+                                consolidated,
+                                as_of=as_of,
+                                scope="consolidated_range",
+                                continuity=True,
+                                parameters={
+                                    **consolidated_parameters,
+                                    "evaluation_state": "rolled_back",
+                                },
+                            )
             except Exception:
                 error.add_note(
                     "Failure tracking incomplete; inspect the batch status and reports."

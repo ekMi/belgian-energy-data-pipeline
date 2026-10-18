@@ -1,5 +1,14 @@
 # Belgian Energy Data Pipeline
 
+## Current phase D behavior
+
+Ingestion classifies NEW/UNCHANGED/CHANGED, applies only explicitly authorized
+corrections with history, and validates incoming plus bounded consolidated data.
+[The D5 guide](docs/phase_d_acceptance.md) is the current reference for quality
+scopes, diagnostics and reproducible acceptance. Earlier phase guides describe
+their historical implementation scope.
+
+
 Python and PostgreSQL pipeline for Belgian electricity grid data published by
 Elia. The project progressively targets an analytical PostgreSQL model, Power BI,
 and possible future Microsoft Fabric integration.

@@ -28,14 +28,14 @@ def test_warning_persisted_and_historical_read_only(test_database, csv_file, row
     assert any(r.anomaly_count for r in results)
     assert (
         test_database.execute("SELECT count(*) FROM staging.quality_run").fetchone()[0]
-        == 1
+        == 2
     )
     analyze_batch(
         test_database, batch, as_of=datetime(2025, 1, 3, tzinfo=UTC), persist=True
     )
     assert (
         test_database.execute("SELECT count(*) FROM staging.quality_run").fetchone()[0]
-        == 2
+        == 3
     )
     assert (
         test_database.execute(
