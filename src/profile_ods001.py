@@ -1,8 +1,6 @@
-from pathlib import Path
-
 import pandas as pd
 
-DATA_PATH = Path("data/raw/ods001.csv")
+from config import CSV_PATH
 
 
 def profile_timestamps(df: pd.DataFrame) -> None:
@@ -109,7 +107,7 @@ def profile_missing_periods(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    df = pd.read_csv(DATA_PATH, sep=";")
+    df = pd.read_csv(CSV_PATH, sep=";")
 
     print("=== ODS001 Data Profiling ===")
 
