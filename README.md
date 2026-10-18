@@ -145,3 +145,12 @@ See [the D1 contract and manual migration procedure](docs/incremental_contract.m
 Migration 04 is additive; it does not enable incremental ingestion. The current
 step-C ingestion remains unchanged. D2-D4 will implement classification, fusion,
 correction authorization and concurrency locking.
+
+## Incremental preview (D2)
+
+[Preview an export without changing permanent data](docs/incremental_preview.md):
+
+    .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --sample-size 5
+
+The output reports NEW, UNCHANGED and CHANGED counts and bounded examples.
+It does not apply corrections, write ingestion batches or perform a merge.
