@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local data and databases
+data/raw/*
+data/processed/*
+*.db
+*.sqlite
+*.sqlite3
+
+# Keep directory structure
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Local settings and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and system
+.vscode/
+.DS_Store
+Thumbs.db
