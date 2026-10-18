@@ -1,15 +1,17 @@
 """ODS001 ingestion with explicit file-bound, historized corrections."""
 
 import argparse
+import logging
 import re
 import sys
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import psycopg
 
-from config import CSV_PATH, get_connection_params
+from config import CSV_PATH, get_connection_params, positive_seconds
 from consolidated_quality import check_consolidated
 from merge_ods001 import (
     archive_corrections,
@@ -17,12 +19,14 @@ from merge_ods001 import (
     load_incoming,
     update_corrections,
 )
+from operations import run_cli
 from quality_ods001 import QualityResult, evaluate_quality, has_errors
 from quality_store import COLUMNS, save_results
 from validate_ods001 import calculate_sha256
 
 # Session lock: distinct from the integration fixture's (81002, 1).
 INGESTION_LOCK = (81001, 1)
+logger = logging.getLogger(__name__)
 
 
 class ChangedObservationsError(ValueError):
@@ -33,7 +37,10 @@ class ChangedObservationsError(ValueError):
 def ingestion_lock(conn):
     # Set a bounded wait without changing caller-wide/server settings.
     with conn.transaction():
-        conn.execute("SET LOCAL lock_timeout = '10s'")
+        conn.execute(
+            "SELECT set_config('lock_timeout', %s, true)",
+            (f"{positive_seconds('PIPELINE_LOCK_TIMEOUT', 10)}s",),
+        )
         conn.execute("SELECT pg_advisory_lock(%s, %s)", INGESTION_LOCK)
     try:
         yield
@@ -81,6 +88,8 @@ def ingest_csv(
     if input_scope not in ("continuous", "partial"):
         raise ValueError("input_scope must be continuous or partial")
     validate_authorization(authorized_sha256, correction_reason, extracted_at)
+    started = time.monotonic()
+    logger.info("ingestion_started file=%r scope=%s", path.name, input_scope)
     with psycopg.connect(**get_connection_params()) as conn, ingestion_lock(conn):
         checksum = calculate_sha256(path)
         if authorized_sha256 is not None and authorized_sha256 != checksum:
@@ -91,7 +100,12 @@ def ingest_csv(
             (checksum,),
         ).fetchone()
         if existing:
-            print(f"File already ingested successfully (batch_id={existing[0]}).")
+            logger.info(
+                "ingestion_skipped file=%r batch_id=%s duration_seconds=%.3f",
+                path.name,
+                existing[0],
+                time.monotonic() - started,
+            )
             return None
         batch_id = conn.execute(
             "INSERT INTO staging.ingestion_batch "
@@ -110,6 +124,7 @@ def ingest_csv(
             ),
         ).fetchone()[0]
         conn.commit()
+        logger.info("batch_started file=%r batch_id=%s", path.name, batch_id)
         as_of = datetime.now(UTC)
         results = []
         consolidated = None
@@ -119,6 +134,10 @@ def ingest_csv(
         try:
             with conn.transaction():
                 conn.execute("SET LOCAL TIME ZONE 'UTC'")
+                conn.execute(
+                    "SELECT set_config('lock_timeout', %s, true)",
+                    (f"{positive_seconds('PIPELINE_LOCK_TIMEOUT', 10)}s",),
+                )
                 load_incoming(conn, path, checksum)
                 classification = classify_incoming(conn, checksum)
                 received = classification.rows_received
@@ -204,7 +223,7 @@ def ingest_csv(
                         batch_id,
                     ),
                 )
-        except Exception as error:
+        except (Exception, KeyboardInterrupt) as error:
             try:
                 with conn.transaction():
                     status = conn.execute(
@@ -261,10 +280,38 @@ def ingest_csv(
                                 },
                             )
             except Exception:
+                logger.error("failure_tracking_incomplete batch_id=%s", batch_id)
                 error.add_note(
                     "Failure tracking incomplete; inspect the batch status and reports."
                 )
+            logger.error(
+                "ingestion_failed file=%r batch_id=%s error_type=%s duration_seconds=%.3f",
+                path.name,
+                batch_id,
+                type(error).__name__,
+                time.monotonic() - started,
+            )
             raise
+        warnings = sum(
+            r.anomaly_count
+            for r in [*results, *consolidated]
+            if r.severity == "WARNING"
+        )
+        if warnings:
+            logger.warning(
+                "quality_warnings batch_id=%s rule_anomaly_total=%s", batch_id, warnings
+            )
+        logger.info(
+            "ingestion_finished file=%r batch_id=%s received=%s inserted=%s unchanged=%s "
+            "updated=%s duration_seconds=%.3f",
+            path.name,
+            batch_id,
+            received,
+            inserted,
+            classification.rows_unchanged,
+            updated,
+            time.monotonic() - started,
+        )
     return received
 
 
@@ -292,4 +339,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli(main))

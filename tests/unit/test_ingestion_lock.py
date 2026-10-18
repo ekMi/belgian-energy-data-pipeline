@@ -26,7 +26,7 @@ def test_session_lock_released(failed):
         with ingestion_lock(conn):
             pass
     sql = [call.args[0] for call in conn.execute.call_args_list]
-    assert sql[0] == "SET LOCAL lock_timeout = '10s'"
+    assert sql[0] == "SELECT set_config('lock_timeout', %s, true)"
     assert "pg_advisory_lock" in sql[1]
     assert "pg_advisory_unlock" in sql[-1]
     assert conn.execute.call_args.args[1] == INGESTION_LOCK

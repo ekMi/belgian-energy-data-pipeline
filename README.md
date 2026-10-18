@@ -183,3 +183,10 @@ CSV SHA-256 to a mandatory justification. History, updates, inserts, quality
 reports and SUCCESS are committed atomically using the existing schema 04.
 No migration is executed by the application. This supersedes earlier D3-only
 descriptions that all corrections are unconditionally rejected.
+
+## Operations (phase 02-E)
+
+See [logging, exit codes, runtime settings and RUNNING diagnosis](docs/operations.md).
+PIPELINE_CONNECT_TIMEOUT defaults to 5 seconds and PIPELINE_LOCK_TIMEOUT to
+10 seconds. CLI logs go to stderr; reports remain on stdout. No automatic
+repair of abandoned batches or scheduling is enabled.

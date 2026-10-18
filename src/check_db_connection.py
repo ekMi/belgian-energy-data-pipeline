@@ -1,6 +1,7 @@
 import psycopg
 
 from config import get_connection_params
+from operations import run_cli
 
 
 def main() -> None:
@@ -26,4 +27,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli(main))

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from config import CSV_PATH
+from operations import run_cli
 
 EXPECTED_COLUMNS = [
     "Datetime",
@@ -106,4 +107,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli(main))

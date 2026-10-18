@@ -1,6 +1,7 @@
 import pandas as pd
 
 from config import CSV_PATH
+from operations import run_cli
 
 
 def profile_timestamps(df: pd.DataFrame) -> None:
@@ -133,4 +134,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli(main))

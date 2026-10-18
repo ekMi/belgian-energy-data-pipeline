@@ -9,6 +9,7 @@ from pathlib import Path
 import psycopg
 
 from config import get_connection_params
+from operations import run_cli
 from quality_store import COLUMNS
 from validate_ods001 import EXPECTED_COLUMNS, calculate_sha256, parse_row, validate_csv
 
@@ -224,4 +225,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli(main))

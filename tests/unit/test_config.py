@@ -9,9 +9,11 @@ def test_connection_params(monkeypatch):
     values = ["localhost", "5432", "test_database", "test_user", "test_secret"]
     for name, value in zip(VARIABLES, values, strict=True):
         monkeypatch.setenv(name, value)
-    assert get_connection_params() == dict(
-        zip(["host", "port", "dbname", "user", "password"], values, strict=True)
-    )
+    monkeypatch.delenv("PIPELINE_CONNECT_TIMEOUT", raising=False)
+    assert get_connection_params()["connect_timeout"] == 5
+    assert {
+        k: v for k, v in get_connection_params().items() if k != "connect_timeout"
+    } == dict(zip(["host", "port", "dbname", "user", "password"], values, strict=True))
 
 
 def test_missing_config_does_not_expose_values(monkeypatch):

@@ -7,6 +7,7 @@ from datetime import datetime
 import psycopg
 
 from config import get_connection_params
+from operations import run_cli
 from quality_ods001 import evaluate_quality
 from quality_store import COLUMNS, save_results
 
@@ -97,4 +98,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli(main))
