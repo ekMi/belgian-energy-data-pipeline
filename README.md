@@ -138,3 +138,10 @@ Missing TEST_PG configuration produces explicit skips, not successful tests.
 See [rules, migration and historical analysis](docs/data_quality.md). Migration 03
 must be applied manually before ingestion with this version. Historical analysis
 is read-only by default and does not re-import the CSV.
+
+## Incremental schema contract (D1)
+
+See [the D1 contract and manual migration procedure](docs/incremental_contract.md).
+Migration 04 is additive; it does not enable incremental ingestion. The current
+step-C ingestion remains unchanged. D2-D4 will implement classification, fusion,
+correction authorization and concurrency locking.
