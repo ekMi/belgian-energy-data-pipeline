@@ -4,6 +4,7 @@ import psycopg
 import pytest
 
 from ingest_ods001 import ingest_csv
+from merge_ods001 import DuplicateInputError
 from validate_ods001 import calculate_sha256
 
 pytestmark = pytest.mark.integration
@@ -75,7 +76,7 @@ def test_rollback_preserves_existing_data(test_database, csv_file, rows, failure
     incoming = [row.copy() for row in rows[1:]]
     if failure == "duplicate":
         incoming.append(incoming[0].copy())
-        expected_error = psycopg.errors.UniqueViolation
+        expected_error = DuplicateInputError
     else:
         invalid = rows[0].copy()
         invalid[2] = "not-a-number"

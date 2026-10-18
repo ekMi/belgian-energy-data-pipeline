@@ -74,6 +74,65 @@ def measure_differences(old_values, new_values):
     }
 
 
+def load_incoming(conn, path, checksum):
+    validate_csv(path)
+    # CREATE TEMP needs a read/write transaction. Only temporary objects
+    # are written; force_rollback also cleans them on successful preview.
+    conn.execute(
+        f"CREATE TEMP TABLE ods001_preview ON COMMIT DROP AS "
+        f"SELECT {COLUMNS} FROM staging.elia_load WITH NO DATA"
+    )
+    conn.execute(
+        "ALTER TABLE pg_temp.ods001_preview ADD COLUMN source_line BIGINT NOT NULL"
+    )
+    with path.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream, delimiter=";")
+        if next(reader, None) != EXPECTED_COLUMNS:
+            raise ValueError("Line 1: CSV header changed before COPY")
+        copied_rows = 0
+        with (
+            conn.cursor() as cur,
+            cur.copy(
+                f"COPY pg_temp.ods001_preview ({COLUMNS}, source_line) FROM STDIN"
+            ) as copy,
+        ):
+            for row in reader:
+                copy.write_row(
+                    (
+                        *parse_row(row, line_number=reader.line_num),
+                        reader.line_num,
+                    )
+                )
+                copied_rows += 1
+        if copied_rows == 0:
+            raise ValueError("CSV contains no data rows")
+
+    if calculate_sha256(path) != checksum:
+        raise ValueError("Input file changed during preview")
+    duplicate = conn.execute(
+        "SELECT timestamp_utc, resolution_code, count(*), min(source_line) "
+        "FROM pg_temp.ods001_preview GROUP BY timestamp_utc, resolution_code "
+        "HAVING count(*) > 1 ORDER BY timestamp_utc, resolution_code LIMIT 1"
+    ).fetchone()
+    if duplicate:
+        timestamp, resolution, count, line = duplicate
+        raise DuplicateInputError(
+            f"Line {line}: duplicate key ({timestamp.isoformat()}, {resolution}); "
+            f"{count} occurrences"
+        )
+
+
+def classify_incoming(conn, checksum, sample_size=5):
+    total, new, unchanged, changed, samples = conn.execute(
+        CLASSIFICATION_SQL, (sample_size,)
+    ).fetchone()
+    for sample in samples:
+        sample["changed_measures"] = measure_differences(
+            sample["old_values"], sample["new_values"]
+        )
+    return PreviewResult(checksum, total, new, unchanged, changed, samples)
+
+
 def preview_csv(path: Path, *, sample_size: int = 5) -> PreviewResult:
     """Own a fresh connection and always roll back its temporary-table transaction."""
     if (
@@ -88,58 +147,8 @@ def preview_csv(path: Path, *, sample_size: int = 5) -> PreviewResult:
         with conn.transaction(force_rollback=True):
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             conn.execute("SET LOCAL TIME ZONE 'UTC'")
-            # CREATE TEMP needs a read/write transaction. Only temporary objects
-            # are written; force_rollback also cleans them on successful preview.
-            conn.execute(
-                f"CREATE TEMP TABLE ods001_preview ON COMMIT DROP AS "
-                f"SELECT {COLUMNS} FROM staging.elia_load WITH NO DATA"
-            )
-            conn.execute(
-                "ALTER TABLE pg_temp.ods001_preview ADD COLUMN source_line BIGINT NOT NULL"
-            )
-            with path.open(encoding="utf-8-sig", newline="") as stream:
-                reader = csv.reader(stream, delimiter=";")
-                if next(reader, None) != EXPECTED_COLUMNS:
-                    raise ValueError("Line 1: CSV header changed before COPY")
-                copied_rows = 0
-                with (
-                    conn.cursor() as cur,
-                    cur.copy(
-                        f"COPY pg_temp.ods001_preview ({COLUMNS}, source_line) FROM STDIN"
-                    ) as copy,
-                ):
-                    for row in reader:
-                        copy.write_row(
-                            (
-                                *parse_row(row, line_number=reader.line_num),
-                                reader.line_num,
-                            )
-                        )
-                        copied_rows += 1
-                if copied_rows == 0:
-                    raise ValueError("CSV contains no data rows")
-
-            if calculate_sha256(path) != checksum:
-                raise ValueError("Input file changed during preview")
-            duplicate = conn.execute(
-                "SELECT timestamp_utc, resolution_code, count(*), min(source_line) "
-                "FROM pg_temp.ods001_preview GROUP BY timestamp_utc, resolution_code "
-                "HAVING count(*) > 1 ORDER BY timestamp_utc, resolution_code LIMIT 1"
-            ).fetchone()
-            if duplicate:
-                timestamp, resolution, count, line = duplicate
-                raise DuplicateInputError(
-                    f"Line {line}: duplicate key ({timestamp.isoformat()}, {resolution}); "
-                    f"{count} occurrences"
-                )
-            total, new, unchanged, changed, samples = conn.execute(
-                CLASSIFICATION_SQL, (sample_size,)
-            ).fetchone()
-            for sample in samples:
-                sample["changed_measures"] = measure_differences(
-                    sample["old_values"], sample["new_values"]
-                )
-            result = PreviewResult(checksum, total, new, unchanged, changed, samples)
+            load_incoming(conn, path, checksum)
+            result = classify_incoming(conn, checksum, sample_size)
         return result
 
 

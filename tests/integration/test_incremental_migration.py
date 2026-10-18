@@ -1,11 +1,17 @@
 """Migration 04 on populated test-only schemas; no incremental ingestion."""
 
+import csv
+from datetime import UTC, datetime
+
 import psycopg
 import pytest
 from postgres_support import verify_test_database
 
 from config import PROJECT_ROOT
 from ingest_ods001 import ingest_csv
+from quality_ods001 import evaluate_quality
+from quality_store import COLUMNS, save_results
+from validate_ods001 import calculate_sha256, parse_row
 
 pytestmark = pytest.mark.integration
 
@@ -57,15 +63,50 @@ def snapshot(conn):
     }
 
 
+def seed_legacy(conn, path):
+    batch = conn.execute(
+        "INSERT INTO staging.ingestion_batch (source_file,file_sha256) "
+        "VALUES (%s,%s) RETURNING batch_id",
+        (path.name, calculate_sha256(path)),
+    ).fetchone()[0]
+    with path.open(encoding="utf-8", newline="") as stream:
+        reader = csv.reader(stream, delimiter=";")
+        next(reader)
+        records = [parse_row(r, line_number=reader.line_num) for r in reader]
+    with (
+        conn.cursor() as cur,
+        cur.copy(
+            f"COPY staging.elia_load ({COLUMNS},ingestion_batch_id) FROM STDIN"
+        ) as copy,
+    ):
+        for record in records:
+            copy.write_row((*record, batch))
+    now = datetime.now(UTC)
+    save_results(
+        conn,
+        batch,
+        evaluate_quality(records, as_of=now),
+        as_of=now,
+        scope="incoming_file",
+    )
+    conn.execute(
+        "UPDATE staging.ingestion_batch SET status='SUCCESS',rows_loaded=%s,"
+        "finished_at=clock_timestamp() WHERE batch_id=%s",
+        (len(records), batch),
+    )
+    conn.commit()
+    return len(records)
+
+
 @pytest.fixture
 def migrated(test_database, csv_file, rows):
-    assert ingest_csv(csv_file(rows)) == 4
+    assert seed_legacy(test_database, csv_file(rows)) == 4
     apply_migration(test_database)
     return test_database
 
 
 def test_preserves_populated_database(test_database, csv_file, rows):
-    assert ingest_csv(csv_file(rows)) == 4
+    assert seed_legacy(test_database, csv_file(rows)) == 4
     # Keep historical FAILED and RUNNING records, also with unknown metadata.
     test_database.execute(
         "INSERT INTO staging.ingestion_batch (source_file,file_sha256,status) "
@@ -100,7 +141,7 @@ def test_preserves_populated_database(test_database, csv_file, rows):
 
 
 def test_duplicate_success_precheck_rolls_back(test_database, csv_file, rows):
-    ingest_csv(csv_file(rows))
+    seed_legacy(test_database, csv_file(rows))
     test_database.execute(
         "INSERT INTO staging.ingestion_batch (source_file,file_sha256,status) "
         "SELECT 'duplicate',file_sha256,'SUCCESS' FROM staging.ingestion_batch"

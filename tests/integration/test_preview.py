@@ -1,10 +1,8 @@
 import psycopg
 import pytest
-from postgres_support import verify_test_database
 
 import ingest_ods001
 import merge_ods001
-from config import PROJECT_ROOT
 from merge_ods001 import DuplicateInputError, preview_csv
 from validate_ods001 import calculate_sha256
 
@@ -13,19 +11,6 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def preview_database(test_database, monkeypatch):
-    # Exercise D2 against the already-approved D1 schema, only in the test DB.
-    verify_test_database(test_database)
-    test_database.commit()
-    test_database.autocommit = True
-    try:
-        test_database.execute(
-            (PROJECT_ROOT / "sql/04_add_incremental_tracking.sql").read_text()
-        )
-    except Exception:
-        test_database.execute("ROLLBACK")
-        raise
-    finally:
-        test_database.autocommit = False
     monkeypatch.setattr(
         merge_ods001, "get_connection_params", ingest_ods001.get_connection_params
     )

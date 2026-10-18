@@ -21,7 +21,7 @@ VARIABLES = {
 
 
 @pytest.fixture
-def test_database(monkeypatch):
+def test_database(monkeypatch, request):
     missing = [name for name in VARIABLES.values() if not os.environ.get(name)]
     if missing:
         pytest.skip(
@@ -87,6 +87,13 @@ def test_database(monkeypatch):
                 )
             )
             admin.commit()
+            if request.module.__name__ != "test_incremental_migration":
+                admin.execute(
+                    (PROJECT_ROOT / "sql/04_add_incremental_tracking.sql").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                admin.commit()
             yield admin
         finally:
             admin.rollback()

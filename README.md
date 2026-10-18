@@ -125,8 +125,8 @@ Missing TEST_PG configuration produces explicit skips, not successful tests.
 - Failed attempts are tracked separately; connection loss or process termination
   may leave RUNNING. New attempts use real clock timestamps.
 - Concurrent executions are not coordinated.
-- Files with overlapping keys fail; incremental updates and correction history
-  are not implemented.
+- New and unchanged overlapping observations are supported by D3. Changed
+  observations are rejected; corrections and history writes await D4.
 - Separate header, hash and ingestion reads assume an immutable source file.
 - Profiling reports are exploratory, not persisted quality gates. Missing values
   must eventually be evaluated against measurement and forecast horizons.
@@ -154,3 +154,14 @@ correction authorization and concurrency locking.
 
 The output reports NEW, UNCHANGED and CHANGED counts and bounded examples.
 It does not apply corrections, write ingestion batches or perform a merge.
+
+## Incremental ingestion (D3)
+
+See [the D3 transaction, counters and locking contract](docs/incremental_ingestion.md).
+Migration 04 is required. Ingestion inserts NEW rows, retains UNCHANGED rows and
+rejects entire batches containing CHANGED rows. No correction history is written.
+
+    .\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/new_export.csv --input-scope partial
+
+The original no-argument command remains supported. The D3 guide supersedes
+earlier step-C/D1 descriptions of ingestion behavior.
