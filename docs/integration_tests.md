@@ -1,4 +1,4 @@
-﻿# PostgreSQL integration tests
+# PostgreSQL integration tests
 
 ## Dedicated, disposable database
 
@@ -107,8 +107,8 @@ COPY, commits, rollbacks and SQL constraints use real Psycopg/PostgreSQL. No
 SQLite or simulated database replaces an integration test. Separate unit tests
 use mocks only to verify the database identity safety guard.
 
-Failed ingestion currently removes its batch record through rollback. Tests
-assert that existing behavior; persistent FAILED tracking remains future work.
+Failed ingestion rolls back observations and retains a FAILED batch. Fixtures
+apply migration 03 only in the authorized test database. See data_quality.md.
 Concurrent ingestion, retries, incremental loads, correction history and
 persistent quality controls are outside step B.
 

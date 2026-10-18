@@ -9,7 +9,7 @@ and possible future Microsoft Fabric integration.
 Phase 01 (source qualification and initial storage) is complete. Phase 02, step A
 consolidates configuration, CSV parsing and unit tests. Step B adds PostgreSQL 18
 integration tests with an explicitly isolated test database. Incremental loading,
-persistent quality results and correction history are not implemented.
+correction history is not implemented. Step C adds quality reports and durable FAILED tracking; see [Data quality](docs/data_quality.md) for the required manual migration.
 
 Source: Elia ODS001, https://opendata.elia.be/explore/dataset/ods001/
 The historical export contains 414,336 records and ten columns. Raw data is not
@@ -122,8 +122,8 @@ not require PostgreSQL. Integration tests require the dedicated PostgreSQL 18
 database described in [the integration test guide](docs/integration_tests.md).
 Missing TEST_PG configuration produces explicit skips, not successful tests.
 
-- Failed loads currently roll back their tracking record too; FAILED batches
-  are not persisted. Transaction timestamps do not measure elapsed duration.
+- Failed attempts are tracked separately; connection loss or process termination
+  may leave RUNNING. New attempts use real clock timestamps.
 - Concurrent executions are not coordinated.
 - Files with overlapping keys fail; incremental updates and correction history
   are not implemented.
@@ -132,3 +132,9 @@ Missing TEST_PG configuration produces explicit skips, not successful tests.
   must eventually be evaluated against measurement and forecast horizons.
 - No automatic retries, scheduling or structured operational logging.
 - API acquisition, analytical transformations and Power BI remain future work.
+
+## Data quality (step C)
+
+See [rules, migration and historical analysis](docs/data_quality.md). Migration 03
+must be applied manually before ingestion with this version. Historical analysis
+is read-only by default and does not re-import the CSV.

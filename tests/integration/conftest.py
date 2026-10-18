@@ -81,6 +81,12 @@ def test_database(monkeypatch):
             for name in ("01_create_schema.sql", "02_add_ingestion_tracking.sql"):
                 admin.execute((PROJECT_ROOT / "sql" / name).read_text(encoding="utf-8"))
             admin.commit()
+            admin.execute(
+                (PROJECT_ROOT / "sql/03_add_quality_tracking.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            admin.commit()
             yield admin
         finally:
             admin.rollback()

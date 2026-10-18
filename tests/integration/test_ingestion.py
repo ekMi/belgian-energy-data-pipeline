@@ -83,8 +83,13 @@ def test_rollback_preserves_existing_data(test_database, csv_file, rows, failure
         expected_error = ValueError
     with pytest.raises(expected_error):
         ingest_csv(csv_file(incoming, "failed.csv"))
-    # Neither observations nor a partial/FAILED batch survive the rollback.
-    assert snapshot(test_database) == before
+    after = snapshot(test_database)
+    assert after[0] == before[0]
+    assert after[1][:-1] == before[1]
+    assert test_database.execute(
+        "SELECT status,rows_loaded,finished_at>started_at "
+        "FROM staging.ingestion_batch ORDER BY batch_id DESC LIMIT 1"
+    ).fetchone() == ("FAILED", 0, True)
 
 
 @pytest.mark.parametrize(
