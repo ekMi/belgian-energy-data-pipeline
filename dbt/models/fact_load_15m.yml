@@ -1,0 +1,89 @@
+version: 2
+
+models:
+  - name: fact_load_15m
+    description: >-
+      Une ligne par intervalle UTC de 15 minutes de charge belge Elia ODS001.
+      Les huit mesures MW sont copiées sans correction. Les dimensions décrivent
+      la date et l'heure Europe/Brussels ; le timestamp UTC et le décalage
+      distinguent les heures locales répétées. Les jointures aux dimensions sont
+      externes pour conserver toute observation source si une clé manque.
+    columns:
+      - name: interval_start_utc
+        description: Début d'intervalle, instant UTC unique (PostgreSQL TIMESTAMPTZ).
+        data_tests: [not_null, unique]
+      - name: date_key
+        description: Clé YYYYMMDD vers dim_date, calculée en Europe/Brussels.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_key
+      - name: time_key
+        description: Clé HHMM vers dim_time, calculée en Europe/Brussels.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_time')
+                field: time_key
+      - name: utc_offset_minutes
+        description: Décalage Europe/Brussels moins UTC en minutes, 60 ou 120.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [60, 120]
+                quote: false
+      - name: quality_as_of_utc
+        description: Référence UTC commune à toutes les lignes pour les statuts qualité.
+        data_tests: [not_null]
+      - name: total_load_mw
+        description: Charge réelle mesurée et extrapolée, en MW ; NULL conservé.
+      - name: most_recent_forecast_mw
+        description: Prévision most recent, en MW.
+      - name: most_recent_p10_mw
+        description: Borne basse P10 de la prévision most recent, en MW.
+      - name: most_recent_p90_mw
+        description: Borne haute P90 de la prévision most recent, en MW.
+      - name: day_ahead_forecast_mw
+        description: Prévision day-ahead 6PM, en MW.
+      - name: day_ahead_p10_mw
+        description: Borne basse P10 de la prévision day-ahead 6PM, en MW.
+      - name: day_ahead_p90_mw
+        description: Borne haute P90 de la prévision day-ahead 6PM, en MW.
+      - name: week_ahead_forecast_mw
+        description: Prévision week-ahead, en MW ; NULL conservé.
+      - name: most_recent_interval_status
+        description: Validité du triplet most recent (prévision, P10, P90).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [valid, incomplete, negative_bound, reversed_bounds, forecast_outside_bounds]
+      - name: day_ahead_interval_status
+        description: Validité du triplet day-ahead (prévision, P10, P90).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [valid, incomplete, negative_bound, reversed_bounds, forecast_outside_bounds]
+      - name: most_recent_anomaly_code
+        description: Code de l'anomalie confirmée de 846 MW, sinon NULL.
+      - name: total_load_quality_status
+        description: Statut de présence ou d'anomalie de la charge réelle.
+        data_tests: &quality_status_tests
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [available, missing, future, suspect]
+      - name: most_recent_quality_status
+        description: Statut de la prévision most recent et de son intervalle.
+        data_tests: *quality_status_tests
+      - name: day_ahead_quality_status
+        description: Statut de la prévision day-ahead et de son intervalle.
+        data_tests: *quality_status_tests
+      - name: week_ahead_quality_status
+        description: Statut de la prévision week-ahead.
+        data_tests: *quality_status_tests

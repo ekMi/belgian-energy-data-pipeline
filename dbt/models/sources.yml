@@ -1,0 +1,9 @@
+version: 2
+
+sources:
+  - name: elia
+    schema: staging
+    description: "Données de charge électrique Elia ODS001 ingérées par le pipeline Python ; source existante en lecture seule pour dbt."
+    tables:
+      - name: elia_load
+        description: "Observations de charge et prévisions à résolution PT15M, identifiées par timestamp_utc et resolution_code."

@@ -1,0 +1,74 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >-
+      Calendrier continu des dates civiles Europe/Brussels couvertes par la source
+      Elia. Une reconstruction après ingestion étend les bornes. Saisons
+      météorologiques : hiver décembre-février, printemps mars-mai, été
+      juin-août, automne septembre-novembre. Les noms de mois et saisons sont en
+      anglais. L'année ISO peut différer de l'année civile.
+    columns:
+      - name: date_key
+        description: Clé métier entière YYYYMMDD de la date civile belge.
+        data_tests: [not_null, unique]
+      - name: date_local
+        description: Date civile belge, unique et continue entre les bornes de la source.
+        data_tests: [not_null, unique]
+      - name: year
+        description: Année civile.
+      - name: quarter
+        description: Trimestre civil, de 1 à 4.
+      - name: month
+        description: Mois civil, de 1 à 12.
+      - name: month_name
+        description: Nom du mois en anglais, sans espaces de remplissage.
+      - name: iso_year
+        description: Année de la semaine ISO 8601.
+      - name: iso_week
+        description: Semaine ISO 8601, de 1 à 53.
+      - name: day_of_month
+        description: Jour du mois civil.
+      - name: day_of_week
+        description: Jour ISO, lundi = 1 et dimanche = 7.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+                quote: false
+      - name: is_weekend
+        description: Vrai pour samedi et dimanche.
+      - name: season
+        description: Saison météorologique en anglais.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [winter, spring, summer, autumn]
+
+  - name: dim_time
+    description: >-
+      Référentiel fixe de 96 créneaux de 15 minutes, sans date ni fuseau horaire.
+      Deux observations peuvent partager date_key et time_key lors du retour à
+      l'heure d'hiver. La future table de faits distinguera ces observations avec
+      timestamp_utc et le décalage horaire.
+    columns:
+      - name: time_key
+        description: Clé métier entière HHMM, de 0 à 2345.
+        data_tests: [not_null, unique]
+      - name: time_local
+        description: Heure locale générique du créneau, unique.
+        data_tests: [not_null, unique]
+      - name: hour
+        description: Heure de 0 à 23.
+      - name: minute
+        description: Minute du créneau.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 15, 30, 45]
+                quote: false
+      - name: quarter_hour
+        description: Position du créneau dans l'heure, de 1 à 4.
+      - name: time_label
+        description: Heure sur deux chiffres, de 00 à 23.

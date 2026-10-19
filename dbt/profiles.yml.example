@@ -1,0 +1,12 @@
+belgian_energy_analytics:
+  target: local
+  outputs:
+    local:
+      type: postgres
+      host: "{{ env_var('PGHOST') }}"
+      port: "{{ env_var('PGPORT') | int }}"
+      dbname: belgian_energy
+      user: "{{ env_var('PGUSER') }}"
+      password: "{{ env_var('PGPASSWORD') }}"
+      schema: analytics
+      threads: 1
