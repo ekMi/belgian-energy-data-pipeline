@@ -33,7 +33,7 @@ py -3.13 -m venv .venv-dbt
 Copy-Item dbt\profiles.yml.example dbt\profiles.yml
 ```
 
-Créer la base et appliquer les migrations `sql/01_create_schema.sql` à `sql/04_add_incremental_tracking.sql` dans l'ordre, avec un compte autorisé et après revue. Sur une base déjà peuplée, suivre les prérequis propres à chaque migration ; ne pas rejouer aveuglément les scripts. Le profil dbt exemple cible la base `belgian_energy` et le schéma `analytics` ; l'adapter à son instance.
+Créer la base et appliquer les migrations `sql/01_create_schema.sql` à `sql/04_add_incremental_tracking.sql` dans l'ordre, avec un compte autorisé et après revue. Sur une base déjà peuplée, suivre les prérequis propres à chaque migration ; ne pas rejouer aveuglément les scripts. Le profil dbt exemple lit les cinq variables PostgreSQL et cible le schéma `analytics`.
 
 Renseigner `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` et `PGPASSWORD` dans l'environnement du processus ou dans un fichier `.env` local ignoré par Git. Python charge `.env` sans écraser les variables déjà présentes ; dbt lit les variables d'environnement et ne charge pas `.env` lui-même. Ne jamais versionner les identifiants. Placer un export CSV immuable sous `data/raw/` (ignoré par Git). Le chemin par défaut de l'ingestion est `data/raw/ods001.csv`.
 
@@ -49,8 +49,9 @@ Les commandes ci-dessous partent de la racine du dépôt. Le guide [d'exploitati
 # Écriture dans staging : ingestion sans correction historique autorisée
 .\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/new_export.csv --input-scope partial
 
-# Écriture dans analytics : reconstruction et tests des modèles
-.\.venv-dbt\Scripts\dbt.exe build --project-dir .\dbt --profiles-dir .\dbt
+# Précontrôle en lecture seule, puis reconstruction protégée dans analytics
+.\.venv\Scripts\python.exe -B src/dbt_guard.py --check-only
+.\.venv\Scripts\python.exe -B src/dbt_guard.py
 
 # Validation locale sans ingestion ni reconstruction dbt
 .\.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m 'not integration' -ra

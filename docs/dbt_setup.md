@@ -18,9 +18,9 @@ py -3.13 -m venv .venv-dbt
 Copy-Item dbt\profiles.yml.example dbt\profiles.yml
 ```
 
-`dbt/profiles.yml` est local et ignoré par Git. Le profil exemple lit
-`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` dans le processus et cible
-`belgian_energy` / `analytics`. Adapter `dbname` si nécessaire.
+`dbt/profiles.yml` est local et ignoré par Git. Il doit rester identique à
+l'exemple versionné. Celui-ci lit `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`
+et `PGPASSWORD` dans le processus et cible le schéma `analytics`.
 Contrairement aux scripts Python, dbt ne charge pas le fichier `.env` :
 mettre ces variables dans la session avant de l'appeler, sans afficher ou
 versionner le mot de passe. Exemple pour une session PowerShell :
@@ -48,9 +48,25 @@ et créer/remplacer ses tables dans `analytics`.
 .\.venv-dbt\Scripts\dbt.exe parse --project-dir .\dbt --profiles-dir .\dbt
 .\.venv-dbt\Scripts\dbt.exe ls --project-dir .\dbt --profiles-dir .\dbt
 
-# Écriture des trois tables analytics, puis tests
-.\.venv-dbt\Scripts\dbt.exe build --project-dir .\dbt --profiles-dir .\dbt
+# Précontrôle sans reconstruction (connexion et requête en lecture seule)
+.\.venv\Scripts\python.exe -B src/dbt_guard.py --check-only
+
+# Écriture des trois tables analytics, puis tests, après le même précontrôle
+.\.venv\Scripts\python.exe -B src/dbt_guard.py
 ```
+
+Le lanceur charge `.env` avec `get_connection_params()` sans écraser les
+variables du processus. Il transmet explicitement les cinq variables `PG*`
+au `dbt.exe` de `.venv-dbt`, en imposant le projet, le profil et la cible
+`local`. Avant `build`, il exige les variables complètes, `PGDATABASE` égal
+à `belgian_energy`, un profil local identique à l'exemple attendu, et une
+connexion PostgreSQL dont la base, l'utilisateur, l'adresse et le port
+correspondent à la configuration. Un refus (code 1) invite à corriger les
+variables ou à recopier l'exemple de profil ; aucun mot de passe n'est affiché.
+Un appel manuel direct à `dbt.exe build` contourne ce précontrôle. En
+production, restreindre aussi les droits du rôle PostgreSQL, protéger les
+secrets et contrôler les changements de configuration et du code entre le
+précontrôle et l'exécution.
 
 `dbt run` matérialise les modèles sans exécuter tous les tests ;
 `dbt test` exécute les tests sans reconstruire les tables. `dbt build`

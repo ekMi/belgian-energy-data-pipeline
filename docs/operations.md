@@ -99,12 +99,20 @@ replay is skipped; different bytes with identical observations can create a
 new SUCCESS batch with zero inserts. For CHANGED observations, inspect the
 complete report and follow [authorized corrections](authorized_corrections.md).
 
-After an accepted ingestion, rebuild the analytical tables (database write)
-and manually refresh the Power BI report connected to analytics:
+After an accepted ingestion, check the dbt target, rebuild the analytical
+tables (database write), and manually refresh the Power BI report connected
+to analytics:
 
-    .\.venv-dbt\Scripts\dbt.exe build --project-dir .\dbt --profiles-dir .\dbt
+    .\.venv\Scripts\python.exe -B src/dbt_guard.py --check-only
+    .\.venv\Scripts\python.exe -B src/dbt_guard.py
 
-dbt build also runs the project tests. See [dbt setup](dbt_setup.md).
+The guard loads .env through the existing Python configuration and passes the
+resolved PG settings to the separate dbt executable. It rejects missing or
+unexpected settings, profile drift, and an unexpected effective PostgreSQL
+target before starting dbt build. A refusal exits 1 and leaves analytics
+untouched by this command; inspect configuration without printing credentials.
+Direct manual dbt.exe build bypasses this preflight. dbt build also runs the
+project tests. See [dbt setup](dbt_setup.md).
 
 Read-only diagnostics:
 
