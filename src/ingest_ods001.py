@@ -11,7 +11,13 @@ from pathlib import Path
 
 import psycopg
 
-from config import CSV_PATH, get_connection_params, positive_seconds
+from config import (
+    CSV_PATH,
+    INGESTION_DATABASE,
+    get_connection_params,
+    positive_seconds,
+    verify_database_target,
+)
 from consolidated_quality import check_consolidated
 from merge_ods001 import (
     archive_corrections,
@@ -90,7 +96,13 @@ def ingest_csv(
     validate_authorization(authorized_sha256, correction_reason, extracted_at)
     started = time.monotonic()
     logger.info("ingestion_started file=%r scope=%s", path.name, input_scope)
-    with psycopg.connect(**get_connection_params()) as conn, ingestion_lock(conn):
+    params = get_connection_params()
+    if params["dbname"] != INGESTION_DATABASE:
+        raise RuntimeError(
+            "Refusing database writes: configured database is not authorized"
+        )
+    with psycopg.connect(**params) as conn, ingestion_lock(conn):
+        verify_database_target(conn, params["dbname"], INGESTION_DATABASE)
         checksum = calculate_sha256(path)
         if authorized_sha256 is not None and authorized_sha256 != checksum:
             raise ValueError("Authorization SHA-256 does not match the input file")

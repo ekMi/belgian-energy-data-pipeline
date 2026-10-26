@@ -59,6 +59,7 @@ def test_database(monkeypatch, request):
         return connection
 
     monkeypatch.setattr(ingest_ods001, "get_connection_params", lambda: params.copy())
+    monkeypatch.setattr(ingest_ods001, "INGESTION_DATABASE", TEST_DATABASE)
     monkeypatch.setattr(psycopg, "connect", guarded_connect)
 
     with guarded_connect(**params) as admin:
