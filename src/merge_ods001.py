@@ -3,11 +3,12 @@
 import argparse
 import csv
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import psycopg
-
 from config import get_connection_params
 from operations import run_cli
 from quality_store import COLUMNS
@@ -43,6 +44,22 @@ CLASSIFICATION_SQL = f"""
             ) sample
         ), '[]'::jsonb)
     FROM classified
+"""
+FULL_DIFFERENCES_SQL = f"""
+    SELECT to_jsonb(classified)
+    FROM (
+        SELECT incoming.timestamp_utc, incoming.resolution_code,
+            CASE WHEN existing.timestamp_utc IS NULL THEN 'NEW'
+                 ELSE 'CHANGED' END AS classification,
+            CASE WHEN existing.timestamp_utc IS NULL THEN NULL
+                 ELSE to_jsonb(existing) - 'ingestion_batch_id' END AS old_values,
+            to_jsonb(incoming) - 'source_line' AS new_values
+        FROM pg_temp.ods001_preview incoming
+        LEFT JOIN staging.elia_load existing
+            USING (timestamp_utc, resolution_code)
+        WHERE existing.timestamp_utc IS NULL OR {DISTINCT_MEASURES}
+    ) classified
+    ORDER BY timestamp_utc, resolution_code
 """
 
 
@@ -134,6 +151,100 @@ def classify_incoming(conn, checksum, sample_size=5):
     return PreviewResult(checksum, total, new, unchanged, changed, samples)
 
 
+def write_full_report(conn, result, output):
+    """Stream differences to a sibling file, publishing only a complete report."""
+    summary = {
+        "changed_by_measure": dict.fromkeys(MEASURES, 0),
+        "null_to_value": dict.fromkeys(MEASURES, 0),
+        "value_to_null": dict.fromkeys(MEASURES, 0),
+        "first_changed_utc": None,
+        "last_changed_utc": None,
+    }
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write("{\n")
+            for name in (
+                "file_sha256",
+                "rows_received",
+                "rows_new",
+                "rows_unchanged",
+                "rows_changed",
+            ):
+                stream.write(
+                    f"  {json.dumps(name)}: {json.dumps(getattr(result, name))},\n"
+                )
+            stream.write('  "differences": [\n')
+            count = 0
+            with conn.cursor(name="ods001_full_differences") as cursor:
+                cursor.execute(FULL_DIFFERENCES_SQL)
+                while rows := cursor.fetchmany(1000):
+                    for (difference,) in rows:
+                        difference["changed_measures"] = measure_differences(
+                            difference["old_values"], difference["new_values"]
+                        )
+                        if difference["classification"] == "CHANGED":
+                            timestamp = difference["timestamp_utc"]
+                            summary["first_changed_utc"] = (
+                                summary["first_changed_utc"] or timestamp
+                            )
+                            summary["last_changed_utc"] = timestamp
+                            for name, values in difference["changed_measures"].items():
+                                summary["changed_by_measure"][name] += 1
+                                if values["old"] is None:
+                                    summary["null_to_value"][name] += 1
+                                elif values["new"] is None:
+                                    summary["value_to_null"][name] += 1
+                        if count:
+                            stream.write(",\n")
+                        stream.write("    ")
+                        json.dump(difference, stream)
+                        count += 1
+            if count != result.rows_new + result.rows_changed:
+                raise ValueError("Full report count does not match classification")
+            stream.write('\n  ],\n  "change_summary": ')
+            json.dump(summary, stream)
+            stream.write("\n}\n")
+        os.replace(temporary, output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return summary
+
+
+def preview_full_csv(path: Path, output: Path) -> dict:
+    """Produce a complete report under the same isolated rollback policy."""
+    if path.resolve() == output.resolve():
+        raise ValueError("Output path must differ from input CSV")
+    validate_csv(path)
+    checksum = calculate_sha256(path)
+    with psycopg.connect(**get_connection_params()) as conn:
+        with conn.transaction(force_rollback=True):
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            conn.execute("SET LOCAL TIME ZONE 'UTC'")
+            load_incoming(conn, path, checksum)
+            result = classify_incoming(conn, checksum, 0)
+            summary = write_full_report(conn, result, output)
+    return {
+        "output": str(output),
+        "file_sha256": checksum,
+        "rows_received": result.rows_received,
+        "rows_new": result.rows_new,
+        "rows_unchanged": result.rows_unchanged,
+        "rows_changed": result.rows_changed,
+        "change_summary": summary,
+    }
+
+
 def archive_corrections(conn, batch_id, *, extracted_at=None):
     """Lock current rows, reject known stale inputs and archive before UPDATE."""
     conn.execute(
@@ -217,9 +328,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv_path", type=Path)
     parser.add_argument("--sample-size", type=int, default=5)
+    parser.add_argument("--full-report", action="store_true")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if not 0 <= args.sample_size <= 100:
         parser.error("--sample-size must be between 0 and 100")
+    if args.full_report != (args.output is not None):
+        parser.error("--full-report and --output must be used together")
+    if args.full_report:
+        print(json.dumps(preview_full_csv(args.csv_path, args.output), indent=2))
+        return
     result = preview_csv(args.csv_path, sample_size=args.sample_size)
     print(json.dumps(result.to_dict(), indent=2))
 

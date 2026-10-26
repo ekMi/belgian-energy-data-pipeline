@@ -7,6 +7,15 @@ PGPASSWORD configuration, then run:
 
     .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --sample-size 5
 
+To save every NEW and CHANGED observation for review:
+
+    .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/ods001_20261026.csv --full-report --output data/processed/preview_full_20261026.json
+
+`--full-report` and `--output` must be used together. The output directory must
+already exist. The command prints a compact count and change summary; the file
+contains the full report. `--sample-size` still controls only the ordinary
+preview (default 5, range 0..100).
+
 The command prints JSON and never invokes ingestion or a migration. No batch,
 quality run or correction history is created. The CSV is opened for reading only.
 The preview requires SELECT on staging.elia_load and permission to create TEMP
@@ -32,6 +41,15 @@ The sample is chronological, not statistically representative or stratified:
 NEW rows can fill the limit before any CHANGED rows appear.
 sample-size accepts 0..100 (default 5). Zero returns counts without examples.
 
+The full report keeps the same top-level checksum and counters. Its `differences`
+array contains every NEW and CHANGED observation, with no UNCHANGED entries or
+sample limit. Each CHANGED entry keeps `old_values`, `new_values`, and
+`changed_measures`. `change_summary` contains `changed_by_measure`,
+`null_to_value`, and `value_to_null` maps for all eight measures, plus
+`first_changed_utc` and `last_changed_utc` (null if there are no corrections).
+Only CHANGED observations contribute to this summary. A row changing several
+measures contributes once to each affected measure.
+
 ## SQL and transaction design
 
 1. Reuse validate_csv and parse_row: ordered headers, ten fields, explicit UTC
@@ -51,6 +69,14 @@ sample-size accepts 0..100 (default 5). Zero returns counts without examples.
    loads all stored observations or classifies them in pandas.
 9. Roll back even on success, then close the connection. Temporary objects and
    copied rows are discarded. Errors also roll back.
+
+Full report mode uses the same transaction and exact count query, followed by a
+server-side cursor over NEW/CHANGED rows in the same database snapshot. Python
+writes the JSON incrementally to a temporary file beside the output and replaces
+the requested path only after the array and summary are complete and the counts
+match. On failure, the temporary file is removed and a prior report is retained.
+The CLI exits with an error class on stderr if writing fails; the Python function
+raises the underlying exception for a caller to inspect.
 
 CREATE TEMP TABLE requires a read/write transaction; this is therefore not a
 SET TRANSACTION READ ONLY session. Nevertheless, the only DDL/DML targets are
@@ -79,10 +105,14 @@ Parsing is streamed. PostgreSQL may materialize the classification in memory or
 temporary storage; large inputs can require temporary disk space. Only a bounded
 sample and counters reach Python. Database equality uses existing DOUBLE
 PRECISION values without introducing tolerance or rounding.
+Full report mode transfers all differences and writes all of them to disk, so its
+runtime and report size grow with the number of NEW/CHANGED observations. Python
+holds only a fetched batch of 1,000 differences and the small summary at a time.
+The server-side cursor and sorted query can use PostgreSQL temporary storage.
 
 ## Tests
 
-Existing tests remain unchanged. D2 integration fixtures use the existing
+Unit tests cover full-report streaming and output failures. D2 integration fixtures use the existing
 guarded belgian_energy_test connection and apply the approved D1 migration only
 to that disposable test schema. They never use development PG configuration
 as a fallback. See integration_tests.md for TEST_PG variables.

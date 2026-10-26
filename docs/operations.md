@@ -69,6 +69,17 @@ Read-only diagnostics:
     .\.venv\Scripts\python.exe -B src/check_quality_ods001.py --batch-id 1 --mode historical
     .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv
 
+Complete preview report for review before authorizing historical corrections:
+
+    .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/ods001_20261026.csv --full-report --output data/processed/preview_full_20261026.json
+
+The preview reads permanent tables without changing them. Its JSON report contains
+all NEW/CHANGED observations, counts, checksum and a per-measure correction
+summary. The output directory must exist and have enough free space. The report
+does not authorize corrections or ingest data; ingestion is a separate command
+and reclassifies the file against its own database snapshot. See
+`incremental_preview.md` for the report structure and performance limits.
+
 Actual ingestion (write operation; requires schema 04):
 
     .\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/new_export.csv --input-scope partial
