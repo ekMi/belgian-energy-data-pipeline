@@ -3,12 +3,15 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = PROJECT_ROOT / "data" / "raw" / "ods001.csv"
 
 
 def get_connection_params() -> dict[str, str | int]:
     """Read configuration at call time without exposing credential values."""
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
     variables = {
         "host": "PGHOST",
         "port": "PGPORT",

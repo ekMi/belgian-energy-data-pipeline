@@ -17,11 +17,16 @@ def test_connection_params(monkeypatch):
 
 
 def test_missing_config_does_not_expose_values(monkeypatch):
+    monkeypatch.setattr("config.load_dotenv", lambda *args, **kwargs: None)
+
     for name in VARIABLES:
         monkeypatch.delenv(name, raising=False)
+
     monkeypatch.setenv("PGPASSWORD", "test_secret")
+
     with pytest.raises(ValueError) as error:
         get_connection_params()
+
     assert "PGHOST" in str(error.value)
     assert "test_secret" not in str(error.value)
 

@@ -1,5 +1,6 @@
 # Python
 .venv/
+.venv-dbt/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -20,6 +21,13 @@ data/processed/*
 .env
 .env.*
 !.env.example
+dbt/profiles.yml
+
+# dbt local artifacts
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
 
 # IDE and system
 .vscode/

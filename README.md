@@ -190,3 +190,19 @@ See [logging, exit codes, runtime settings and RUNNING diagnosis](docs/operation
 PIPELINE_CONNECT_TIMEOUT defaults to 5 seconds and PIPELINE_LOCK_TIMEOUT to
 10 seconds. CLI logs go to stderr; reports remain on stdout. No automatic
 repair of abandoned batches or scheduling is enabled.
+
+## dbt setup (phase 03C-1)
+
+See [the local dbt installation and verification guide](docs/dbt_setup.md).
+At that phase, the `dbt/` project only declared the read-only
+`staging.elia_load` source; analytical models were added in phase 03C-2A.
+
+## Temporal dimensions (phase 03C-2A)
+
+See [the date and time dimension guide](docs/temporal_dimensions.md) for keys,
+Belgian daylight-saving rules, dbt commands and verification results.
+
+## Load fact (phase 03C-2B)
+
+See [the 15-minute load fact guide](docs/fact_load_15m.md) for grain, measures,
+quality rules, daylight-saving behavior and verification results.
