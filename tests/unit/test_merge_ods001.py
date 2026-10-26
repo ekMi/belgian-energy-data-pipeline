@@ -2,8 +2,9 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
-import merge_ods001
 import pytest
+
+import merge_ods001
 from merge_ods001 import (
     MEASURES,
     PreviewResult,
