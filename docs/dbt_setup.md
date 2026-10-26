@@ -1,13 +1,15 @@
-# Phase 03C-1 — dbt local
+# dbt : installation et transformations
 
-Le sous-projet `dbt/` utilise dbt Core 1.11.16 et `dbt-postgres` 1.11.0 dans un
-environnement Python 3.13 séparé. Il déclare uniquement la source existante
-`staging.elia_load` (`source('elia', 'elia_load')`). Aucun modèle, test de source,
-seed ou snapshot ne crée d'objet PostgreSQL à cette étape.
+Le projet `dbt/` utilise dbt Core 1.11 et l'adaptateur PostgreSQL dans un
+environnement Python 3.13 séparé. Il lit la source `staging.elia_load` et
+matérialise trois tables dans `analytics` : `dim_date`, `dim_time` et
+`fact_load_15m`. Les modèles sont reconstruits en tables, pas mis à jour de
+façon incrémentale. Voir les contrats des [dimensions](temporal_dimensions.md)
+et du [fait](fact_load_15m.md).
 
-## Installation PowerShell
+## Installation et profil local
 
-Depuis la racine du dépôt :
+Depuis la racine du dépôt, dans PowerShell :
 
 ```powershell
 py -3.13 -m venv .venv-dbt
@@ -16,55 +18,57 @@ py -3.13 -m venv .venv-dbt
 Copy-Item dbt\profiles.yml.example dbt\profiles.yml
 ```
 
-Le fichier `dbt/profiles.yml` reste local et ignoré par Git. Le modèle de profil
-ne contient aucun secret : il lit `PGHOST`, `PGPORT`, `PGUSER` et `PGPASSWORD` de
-l'environnement, comme le pipeline Python. `dbname` vaut `belgian_energy` et le
-schéma cible vaut `analytics`. Exemple de configuration de la session :
+`dbt/profiles.yml` est local et ignoré par Git. Le profil exemple lit
+`PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` dans le processus et cible
+`belgian_energy` / `analytics`. Adapter `dbname` si nécessaire.
+Contrairement aux scripts Python, dbt ne charge pas le fichier `.env` :
+mettre ces variables dans la session avant de l'appeler, sans afficher ou
+versionner le mot de passe. Exemple pour une session PowerShell :
 
 ```powershell
 $env:PGHOST = 'localhost'
 $env:PGPORT = '5432'
-$env:PGUSER = 'energy_app' # adapter au compte autorisé localement
+$env:PGUSER = 'energy_app'
 $securePassword = Read-Host 'Mot de passe PostgreSQL' -AsSecureString
 $env:PGPASSWORD = [System.Net.NetworkCredential]::new('', $securePassword).Password
+Remove-Variable securePassword
 ```
 
-Le schéma `staging` figure dans la déclaration de source et reste géré par le
-pipeline d'ingestion. Le profil cible directement `analytics`. Les futurs modèles
-sans configuration `+schema` seront donc placés dans `analytics`. Ne pas leur
-ajouter `+schema: analytics` : la convention par défaut de dbt produirait
-`analytics_analytics`.
+Le schéma cible du profil est déjà `analytics`. Ne pas ajouter
+`+schema: analytics` aux modèles : la convention dbt pourrait alors viser
+`analytics_analytics`. Le rôle dbt doit pouvoir lire `staging.elia_load`
+et créer/remplacer ses tables dans `analytics`.
 
-## Vérification sans matérialisation
+## Diagnostic, construction et tests
 
 ```powershell
+# Lecture/configuration ; debug vérifie aussi la connexion PostgreSQL
 .\.venv-dbt\Scripts\dbt.exe --version
 .\.venv-dbt\Scripts\dbt.exe debug --project-dir .\dbt --profiles-dir .\dbt
 .\.venv-dbt\Scripts\dbt.exe parse --project-dir .\dbt --profiles-dir .\dbt
-.\.venv-dbt\Scripts\dbt.exe ls --resource-type source --project-dir .\dbt --profiles-dir .\dbt
+.\.venv-dbt\Scripts\dbt.exe ls --project-dir .\dbt --profiles-dir .\dbt
+
+# Écriture des trois tables analytics, puis tests
+.\.venv-dbt\Scripts\dbt.exe build --project-dir .\dbt --profiles-dir .\dbt
 ```
 
-`dbt debug` vérifie également la connexion, qui exige des identifiants réels et
-les droits PostgreSQL adaptés. `dbt parse` et `dbt ls` vérifient le projet et la
-source sans créer d'objet en base. Ne pas lancer `dbt run` ou `dbt build` pendant
-03C-1.
+`dbt run` matérialise les modèles sans exécuter tous les tests ;
+`dbt test` exécute les tests sans reconstruire les tables. `dbt build`
+enchaîne construction et tests. Ne lancer la construction qu'après avoir
+vérifié la base et accepté les effets dans `analytics`. Elle ne modifie pas
+`staging`. Le rapport Power BI connecté à ces tables est actualisé
+**manuellement** après reconstruction réussie.
 
-## Résultat de la vérification du 19 octobre 2026
+## État vérifié et limites
 
-- Python 3.13.16 ; dbt Core 1.11.16 ; adaptateur Postgres 1.11.0 ; `pip check`
-  sans dépendance cassée. Le client local `psql` indique PostgreSQL 18.6. La
-  version du serveur n'a pas pu être lue sans connexion authentifiée.
-- `dbt parse` : succès. `dbt ls --resource-type source` : une source,
-  `source:belgian_energy_analytics.elia.elia_load`.
-- `dbt debug` : profil et projet valides ; test de connexion échoué avec des
-  identifiants fictifs de validation. Reprendre la commande ci-dessus avec les
-  véritables variables locales pour confirmer la compatibilité avec le serveur
-  PostgreSQL 18 et les permissions du compte.
-- Aucune commande SQL de modification ni matérialisation dbt n'a été exécutée.
-  Sans connexion authentifiée, l'état des objets PostgreSQL ne peut pas être
-  comparé directement avant/après. Le client dbt n'a établi aucune connexion
-  authentifiée durant ces vérifications.
+Le 26 octobre 2026, une reconstruction des trois modèles et 46 tests dbt
+a réussi après ingestion. Ce résultat est daté ; il ne garantit pas le résultat
+d'une nouvelle exécution. Les mesures source et leurs `NULL` sont conservés
+dans le fait. La classification `missing`/`future` dépend de
+`quality_as_of_utc` (par défaut le début du run dbt), sans délai de
+publication Elia validé. Pour une reconstruction reproductible, voir
+[`fact_load_15m.md`](fact_load_15m.md) et son exemple `--vars`.
 
-`dbt/target/`, `dbt/logs/`, `dbt/dbt_packages/`, `.venv-dbt/` et le profil local
-sont ignorés par Git. Les dépendances directes sont figées dans
-`dbt/requirements.txt`; elles sont isolées du `requirements.txt` d'ingestion.
+L'acquisition des exports, l'orchestration et l'actualisation Power BI ne sont
+pas automatisées. Les environnements `.venv-dbt/`, `dbt/target/`,
+`dbt/logs/` et le profil local sont exclus de Git.

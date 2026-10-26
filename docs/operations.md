@@ -1,15 +1,17 @@
-﻿# Pipeline operations — phase 02-E
+# Pipeline operations
 
 ## Runtime configuration
 
 Use Python 3.13 and the pinned requirements in the existing virtual environment.
 Run commands from the repository root or use absolute script and CSV paths.
-No .env loader, scheduler or new framework is introduced.
+Python loads the local .env through config.get_connection_params() without
+overriding existing process variables. dbt reads process variables directly;
+it does not load .env itself. No scheduler is integrated.
 
 Required connection environment variables: PGHOST, PGPORT, PGDATABASE, PGUSER,
 PGPASSWORD. Missing or empty variables are reported by name at the Python API
 boundary; values are never included in the configuration error. .env is ignored
-by Git but is not loaded automatically.
+by Git. Existing process variables take precedence over its values.
 
 Optional settings:
 - PIPELINE_CONNECT_TIMEOUT: integer seconds, default 5, range 1..3600. Passed to
@@ -61,6 +63,48 @@ prevent failure tracking and leave RUNNING. No unsafe signal-handler database
 writes or automatic retry loop is added.
 
 ## Commands and output capture
+
+Run commands from the repository root. Before a write, verify PGHOST, PGPORT,
+PGDATABASE and PGUSER without printing PGPASSWORD. Keep the input CSV immutable.
+
+Local CSV diagnostics do not connect to PostgreSQL; they use
+data/raw/ods001.csv by default:
+
+    .\.venv\Scripts\python.exe -B src/validate_ods001.py
+    .\.venv\Scripts\python.exe -B src/profile_ods001.py
+
+To inspect batch counters without changing them:
+
+    SELECT batch_id, source_file, status, rows_received, rows_inserted,
+           rows_unchanged, rows_updated, started_at, finished_at
+    FROM staging.ingestion_batch ORDER BY batch_id DESC;
+
+To read saved quality reports for a real batch ID:
+
+    .\.venv\Scripts\python.exe -B src/check_quality_ods001.py --batch-id 1 --mode historical
+
+To evaluate current versions still attributed to that batch:
+
+    .\.venv\Scripts\python.exe -B src/check_quality_ods001.py --batch-id 1 --mode current --as-of 2026-10-26T12:00:00+00:00
+
+Without --persist, both commands use read-only transactions. In current mode,
+--persist appends a report in PostgreSQL; historical mode rejects it. Current
+mode cannot reconstruct the original file after corrections. See
+[data quality](data_quality.md).
+
+Preview creates a temporary PostgreSQL table and rolls back. The full report
+writes a local JSON file; --full-report and --output must be used together.
+Ingestion reclassifies the CSV independently of preview. A successful SHA-256
+replay is skipped; different bytes with identical observations can create a
+new SUCCESS batch with zero inserts. For CHANGED observations, inspect the
+complete report and follow [authorized corrections](authorized_corrections.md).
+
+After an accepted ingestion, rebuild the analytical tables (database write)
+and manually refresh the Power BI report connected to analytics:
+
+    .\.venv-dbt\Scripts\dbt.exe build --project-dir .\dbt --profiles-dir .\dbt
+
+dbt build also runs the project tests. See [dbt setup](dbt_setup.md).
 
 Read-only diagnostics:
 
@@ -137,6 +181,7 @@ The new interruption integration case checks rollback, FAILED and lock release.
 
 Deferred: automatic abandoned-batch repair, retries/backoff, external log
 rotation/retention, job-level runtime limits, statement execution timeouts,
-metrics, scheduling, API acquisition and analytical transformations.
+metrics, scheduling and API acquisition. Analytical transformations are
+implemented separately in dbt; see [dbt setup](dbt_setup.md).
 Current logging prioritizes avoiding credential/data disclosure over verbose
 tracebacks. SQL exception classes alone may require additional manual diagnosis.

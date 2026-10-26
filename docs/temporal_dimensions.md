@@ -1,8 +1,8 @@
-# Phase 03C-2A — dimensions temporelles
+# Dimensions temporelles
 
 Les modèles dbt `dim_date` et `dim_time` sont des tables dans le schéma cible
-`analytics`. Ils lisent `staging.elia_load` sans le modifier. Aucun modèle de
-faits n'est défini à cette étape.
+`analytics`. Ils lisent `staging.elia_load` sans le modifier. Le modèle
+`fact_load_15m` utilise leurs clés locales.
 
 ## Clés et calendrier
 
@@ -26,12 +26,12 @@ dimanche. Les saisons météorologiques sont `winter` (décembre-février),
 
 ## Changement d'heure
 
-La conversion des timestamps UTC en heure belge sera faite dans la future table
-de faits. Une journée normale a 96 observations à résolution PT15M, le passage
+Le modèle fact_load_15m convertit les timestamps UTC en heure belge.
+Une journée normale a 96 observations à résolution PT15M, le passage
 à l'heure d'été en a 92 et le retour à l'heure d'hiver en a 100. `dim_time`
 reste toujours à 96 lignes. Lors du retour, les quatre créneaux `02:00` à
 `02:45` apparaissent deux fois : deux faits pourront donc avoir les mêmes
-`date_key` et `time_key`. Le futur fait conservera `timestamp_utc` et le
+`date_key` et `time_key`. Le fait conserve `interval_start_utc` et le
 décalage UTC pour distinguer ces observations.
 
 Les tests de dimensions contrôlent la grille de 96 créneaux, le calendrier
@@ -39,9 +39,9 @@ continu, les clés et les attributs ISO. Un test de référence construit les
 instants UTC des deux transitions de 2025 et vérifie 92/100 observations,
 92/96 heures locales distinctes et les répétitions de 02:00 lors du retour.
 Ce test vérifie la conversion temporelle et la correspondance avec `dim_time` ;
-il ne garantit pas l'exhaustivité de chaque journée dans la source ou le futur
+il ne garantit pas l'exhaustivité de chaque journée dans la source ou le
 fait. Les contrôles d'unicité du timestamp UTC et de conservation du décalage
-horaire appartiennent à 03C-2B.
+horaire sont vérifiés par les tests du fait.
 
 ## Exécution et résultats du 19 octobre 2026
 

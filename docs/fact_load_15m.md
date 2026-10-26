@@ -1,8 +1,9 @@
-# Phase 03C-2B — fait de charge à 15 minutes
+# Fait de charge à 15 minutes
 
 `analytics.fact_load_15m` contient une ligne par instant UTC `PT15M` de
-`staging.elia_load`. La source possède actuellement un timestamp distinct par
-ligne. Le modèle dbt est une table reconstruite entièrement à chaque `dbt run`.
+`staging.elia_load`. Le modèle dbt est une table reconstruite entièrement à
+chaque `dbt run`. Les volumes cités plus bas sont ceux du contrôle daté du
+19 octobre 2026, avant l'ingestion du 26 octobre.
 Les jointures vers `dim_date` et `dim_time` sont `LEFT JOIN` : une clé absente
 ne retire aucune ligne source et fait échouer les tests de clé et de relation.
 
@@ -64,7 +65,7 @@ qualifient les triplets prévision/P10/P90. La première règle applicable gagne
 5. `valid` autrement.
 
 Ces règles signalent les incohérences sans remplacer ni exclure une mesure.
-La source actuelle n'a aucun triplet incomplet ou inversé. Le seul triplet
+L'examen du 19 octobre 2026 n'a trouvé aucun triplet incomplet ou inversé. Le seul triplet
 `forecast_outside_bounds` concerne `most_recent_forecast_mw = 846` le
 **2015-06-24 03:30 UTC** (05:30 en Belgique), avec P10 = 7 791,92 MW et
 P90 = 8 699,21 MW. Cette ligne reste dans le fait, est `suspect` et porte

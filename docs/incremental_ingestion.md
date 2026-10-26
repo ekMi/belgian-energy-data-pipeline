@@ -1,4 +1,6 @@
-﻿# Incremental ingestion — D3
+# Historical incremental ingestion contract
+
+> Historical design and validation record. Statements in future tense describe the implementation stage at that time. For current operation, see [README](../README.md), [operations](operations.md) and [data quality](data_quality.md).
 
 ## Prerequisites and commands
 

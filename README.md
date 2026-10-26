@@ -1,208 +1,79 @@
 # Belgian Energy Data Pipeline
 
-## Current phase D behavior
+Pipeline local et reproductible pour analyser la consommation électrique belge à partir des exports [Elia ODS001](https://opendata.elia.be/explore/dataset/ods001/). Il charge les observations dans PostgreSQL, contrôle leur qualité, construit trois tables analytiques avec dbt et les met à disposition d'un rapport Power BI actualisé manuellement.
 
-Ingestion classifies NEW/UNCHANGED/CHANGED, applies only explicitly authorized
-corrections with history, and validates incoming plus bounded consolidated data.
-[The D5 guide](docs/phase_d_acceptance.md) is the current reference for quality
-scopes, diagnostics and reproducible acceptance. Earlier phase guides describe
-their historical implementation scope.
+## Fonctionnement
 
+- Validation des CSV ODS001, normalisation des instants en UTC et identification des fichiers par SHA-256.
+- Prévisualisation des différences `NEW`, `UNCHANGED` et `CHANGED`, avec export JSON exhaustif sur demande.
+- Ingestion transactionnelle et incrémentale : insertion des nouveautés, conservation des lignes identiques et correction historique uniquement avec un hash et un motif explicites. Les anciennes valeurs sont historisées.
+- Contrôles qualité sur le fichier reçu et sur les valeurs consolidées concernées. Les erreurs bloquent l'ingestion ; les avertissements sont conservés avec leur périmètre et leur date de référence.
+- Modèles dbt `dim_date`, `dim_time` et `fact_load_15m` dans `analytics`, puis visualisation Power BI.
 
-Python and PostgreSQL pipeline for Belgian electricity grid data published by
-Elia. The project progressively targets an analytical PostgreSQL model, Power BI,
-and possible future Microsoft Fabric integration.
+```mermaid
+flowchart LR
+    A[Export CSV Elia ODS001] --> B[Python : validation et prévisualisation]
+    B --> C[Python : ingestion et contrôles qualité]
+    C --> D[(PostgreSQL staging : observations, batchs, qualité, corrections)]
+    D --> E[dbt : dimensions et fait dans analytics]
+    E --> F[Power BI : actualisation manuelle]
+```
 
-## Status
+Les scripts SQL `01` à `04` créent et font évoluer le schéma `staging` **manuellement** ; Python ne les exécute pas. dbt lit `staging.elia_load` et matérialise ses tables dans `analytics`. Les diagnostics et la prévisualisation ne modifient pas les tables permanentes. Le rapport JSON complet est un fichier local.
 
-Phase 01 (source qualification and initial storage) is complete. Phase 02, step A
-consolidates configuration, CSV parsing and unit tests. Step B adds PostgreSQL 18
-integration tests with an explicitly isolated test database. Incremental loading,
-correction history is not implemented. Step C adds quality reports and durable FAILED tracking; see [Data quality](docs/data_quality.md) for the required manual migration.
+## Reproduire localement
 
-Source: Elia ODS001, https://opendata.elia.be/explore/dataset/ods001/
-The historical export contains 414,336 records and ten columns. Raw data is not
-tracked in Git. Keep the original file unchanged at data/raw/ods001.csv.
+Environnement de référence : Windows 11, Python 3.13, PostgreSQL 18, dbt Core 1.11. Depuis la racine du dépôt, dans PowerShell :
 
-## Environment and installation
+```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+py -3.13 -m venv .venv-dbt
+.\.venv-dbt\Scripts\python.exe -m pip install -r dbt\requirements.txt
+Copy-Item dbt\profiles.yml.example dbt\profiles.yml
+```
 
-Windows, Python 3.13 and PostgreSQL 18. From the repository root in PowerShell:
+Créer la base et appliquer les migrations `sql/01_create_schema.sql` à `sql/04_add_incremental_tracking.sql` dans l'ordre, avec un compte autorisé et après revue. Sur une base déjà peuplée, suivre les prérequis propres à chaque migration ; ne pas rejouer aveuglément les scripts. Le profil dbt exemple cible la base `belgian_energy` et le schéma `analytics` ; l'adapter à son instance.
 
-    py -3.13 -m venv .venv
-    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-    .\.venv\Scripts\python.exe -m pip check
+Renseigner `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` et `PGPASSWORD` dans l'environnement du processus ou dans un fichier `.env` local ignoré par Git. Python charge `.env` sans écraser les variables déjà présentes ; dbt lit les variables d'environnement et ne charge pas `.env` lui-même. Ne jamais versionner les identifiants. Placer un export CSV immuable sous `data/raw/` (ignoré par Git). Le chemin par défaut de l'ingestion est `data/raw/ods001.csv`.
 
-requirements.txt is the sole dependency version reference, including transitive
-and development dependencies, encoded in UTF-8. pyproject.toml configures Ruff
-and pytest only. Update pins deliberately using a clean environment, then
-validate installation and tests before replacing the reference file.
+## Commandes essentielles
 
-Direct tools: psycopg and its binary distribution for PostgreSQL, pandas for
-profiling, pytest for tests and Ruff for linting and formatting.
+Les commandes ci-dessous partent de la racine du dépôt. Le guide [d'exploitation](docs/operations.md) détaille les paramètres, les écritures, les diagnostics et les précautions.
 
-## Architecture
+```powershell
+# Lecture : différences résumées, puis rapport exhaustif local
+.\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --sample-size 5
+.\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --full-report --output data/processed/preview_full.json
 
-    src/
-        config.py                 Shared paths and PostgreSQL configuration
-        validate_ods001.py         Header checks, row parsing and SHA-256
-        ingest_ods001.py           Transactional COPY and file deduplication
-        profile_ods001.py          Exploratory quality and temporal reports
-        check_db_connection.py     Database connection diagnostics
-    sql/
-        01_create_schema.sql
-        02_add_ingestion_tracking.sql
-    tests/unit/
-        test_config.py
-        test_validate_ods001.py
-        test_postgres_safety.py
-    tests/integration/
-        conftest.py
-        test_ingestion.py
-    tests/postgres_support.py      Database identity safety guard
-    data/raw/                     Local immutable source exports
-    data/processed/               Reserved for derived local files
-    docs/                         Reserved for further documentation
+# Écriture dans staging : ingestion sans correction historique autorisée
+.\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/new_export.csv --input-scope partial
 
-Paths resolve relative to the project location, independently of the working
-directory. Scripts remain directly executable; no package installation is
-required. pytest adds src to its module search path.
+# Écriture dans analytics : reconstruction et tests des modèles
+.\.venv-dbt\Scripts\dbt.exe build --project-dir .\dbt --profiles-dir .\dbt
 
-## PostgreSQL configuration
+# Validation locale sans ingestion ni reconstruction dbt
+.\.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -m 'not integration' -ra
+.\.venv\Scripts\ruff.exe check --no-cache .
+.\.venv\Scripts\ruff.exe format --check --no-cache .
+```
 
-Set PGHOST, PGPORT, PGDATABASE, PGUSER and PGPASSWORD in the process environment
-before running database commands. All five must be nonempty. Do not commit
-credentials or print them in logs. Configuration errors report variable names,
-not values. A .env file is not loaded automatically.
+Une réexécution du **même fichier** déjà enregistré `SUCCESS` est ignorée grâce au SHA-256. Un fichier de contenu différent mais aux observations identiques peut créer un nouveau batch `SUCCESS` avec zéro insertion. Pour une correction, examiner le rapport complet puis fournir le hash exact et un motif selon le [guide des corrections](docs/authorized_corrections.md). Ne pas réutiliser une autorisation dans une tâche récurrente.
 
-The existing database is belgian_energy, using energy_app, with staging and
-analytics schemas. Python does not execute the SQL files. Do not rerun these
-initialization scripts on the populated database. The second script assumes an
-empty elia_load table when adding its non-nullable batch reference. Future
-schema changes require explicit, reviewed migrations.
+## Documentation
 
-## CSV contract
+| Sujet | Guide |
+| --- | --- |
+| Installation, commandes et suivi des batchs | [Exploitation](docs/operations.md) |
+| Règles, périmètres et constats de qualité | [Qualité des données](docs/data_quality.md) |
+| Prévisualisation et rapport complet | [Prévisualisation](docs/incremental_preview.md) |
+| Autorisation et historisation des corrections | [Corrections](docs/authorized_corrections.md) |
+| Configuration et modèles analytiques | [dbt](docs/dbt_setup.md), [dimensions temporelles](docs/temporal_dimensions.md), [fait de charge](docs/fact_load_15m.md) |
+| Tests PostgreSQL et base dédiée | [Tests d'intégration](docs/integration_tests.md) |
+| Contrats et validations antérieurs | [Contrat du schéma](docs/incremental_contract.md), [ingestion incrémentale](docs/incremental_ingestion.md), [validation des deux périmètres](docs/phase_d_acceptance.md) |
 
-- UTF-8 with optional BOM, semicolon delimiter and exact ordered ODS001 headers.
-- At least one data record; empty and header-only files are rejected.
-- Exactly ten fields per record.
-- ISO 8601 timestamps with an explicit UTC offset (Z accepted), normalized to UTC.
-- Resolution code PT15M, matching the existing SQL constraint.
-- Only Total Load and Week-ahead forecast accept an empty string as NULL.
-  Whitespace-only numeric fields are not NULL markers.
-- All other fields are required. Numeric values must be finite: NaN, infinities
-  and overflowing numeric literals are rejected.
-- Row errors identify the physical CSV line and column name/position. For a
-  multiline quoted record, the line number is its ending physical line.
-- No business correction is applied. The 846 MW forecast on 2015-06-24 remains.
+## État et limites
 
-validate_csv checks the header and presence of records, not every data value.
-parse_row validates each record during ingestion. It returns ten business values
-without importing PostgreSQL libraries or attaching a batch identifier.
+Une ingestion réelle du **26 octobre 2026** a traité 415 104 observations : 768 insérées, 413 276 inchangées et 1 060 corrigées avec historique (`batch_id=2`, `SUCCESS`). La reconstruction des trois modèles dbt et leurs 46 tests a réussi ; Power BI a été actualisé manuellement. Ces chiffres sont un résultat daté, pas une valeur attendue par chaque exécution. Le rapport de cette ingestion compte 1 854 occurrences `WARNING` sur deux périmètres ; voir [qualité des données](docs/data_quality.md) pour éviter le double comptage.
 
-## Commands
-
-Read-only commands, with no database connection:
-
-    .\.venv\Scripts\python.exe -B src/validate_ods001.py
-    .\.venv\Scripts\python.exe -B src/profile_ods001.py
-    .\.venv\Scripts\ruff.exe check --no-cache .
-    .\.venv\Scripts\ruff.exe format --check --no-cache .
-    .\.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider
-
-Connection diagnostic:
-
-    .\.venv\Scripts\python.exe src/check_db_connection.py
-
-Ingestion writes to PostgreSQL; run only when a load is intended:
-
-    .\.venv\Scripts\python.exe src/ingest_ods001.py
-
-With the virtual environment activated, python src/ingest_ods001.py remains
-supported. Ingestion validates the file, hashes its raw bytes and skips a hash
-already associated with a SUCCESS batch. Otherwise it streams rows with COPY,
-checks the stored count and commits observations and batch success together.
-Parsing and database errors roll back the transaction.
-
-## Tests and limitations
-
-Unit tests cover configuration, headers, missing data, hashing and row parsing,
-including UTC conversion, required fields, NULLs and nonfinite numbers. They do
-not require PostgreSQL. Integration tests require the dedicated PostgreSQL 18
-database described in [the integration test guide](docs/integration_tests.md).
-Missing TEST_PG configuration produces explicit skips, not successful tests.
-
-- Failed attempts are tracked separately; connection loss or process termination
-  may leave RUNNING. New attempts use real clock timestamps.
-- Concurrent executions are not coordinated.
-- New and unchanged overlapping observations are supported by D3. Changed
-  observations are rejected; corrections and history writes await D4.
-- Separate header, hash and ingestion reads assume an immutable source file.
-- Profiling reports are exploratory, not persisted quality gates. Missing values
-  must eventually be evaluated against measurement and forecast horizons.
-- No automatic retries, scheduling or structured operational logging.
-- API acquisition, analytical transformations and Power BI remain future work.
-
-## Data quality (step C)
-
-See [rules, migration and historical analysis](docs/data_quality.md). Migration 03
-must be applied manually before ingestion with this version. Historical analysis
-is read-only by default and does not re-import the CSV.
-
-## Incremental schema contract (D1)
-
-See [the D1 contract and manual migration procedure](docs/incremental_contract.md).
-Migration 04 is additive; it does not enable incremental ingestion. The current
-step-C ingestion remains unchanged. D2-D4 will implement classification, fusion,
-correction authorization and concurrency locking.
-
-## Incremental preview (D2)
-
-[Preview an export without changing permanent data](docs/incremental_preview.md):
-
-    .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --sample-size 5
-
-The output reports NEW, UNCHANGED and CHANGED counts and bounded examples.
-It does not apply corrections, write ingestion batches or perform a merge.
-
-## Incremental ingestion (D3)
-
-See [the D3 transaction, counters and locking contract](docs/incremental_ingestion.md).
-Migration 04 is required. Ingestion inserts NEW rows, retains UNCHANGED rows and
-rejects entire batches containing CHANGED rows. No correction history is written.
-
-    .\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/new_export.csv --input-scope partial
-
-The original no-argument command remains supported. The D3 guide supersedes
-earlier step-C/D1 descriptions of ingestion behavior.
-
-## Authorized corrections (D4)
-
-[Review the D4 authorization, freshness and history contract](docs/authorized_corrections.md).
-Corrections remain rejected by default. Explicit authorization binds the exact
-CSV SHA-256 to a mandatory justification. History, updates, inserts, quality
-reports and SUCCESS are committed atomically using the existing schema 04.
-No migration is executed by the application. This supersedes earlier D3-only
-descriptions that all corrections are unconditionally rejected.
-
-## Operations (phase 02-E)
-
-See [logging, exit codes, runtime settings and RUNNING diagnosis](docs/operations.md).
-PIPELINE_CONNECT_TIMEOUT defaults to 5 seconds and PIPELINE_LOCK_TIMEOUT to
-10 seconds. CLI logs go to stderr; reports remain on stdout. No automatic
-repair of abandoned batches or scheduling is enabled.
-
-## dbt setup (phase 03C-1)
-
-See [the local dbt installation and verification guide](docs/dbt_setup.md).
-At that phase, the `dbt/` project only declared the read-only
-`staging.elia_load` source; analytical models were added in phase 03C-2A.
-
-## Temporal dimensions (phase 03C-2A)
-
-See [the date and time dimension guide](docs/temporal_dimensions.md) for keys,
-Belgian daylight-saving rules, dbt commands and verification results.
-
-## Load fact (phase 03C-2B)
-
-See [the 15-minute load fact guide](docs/fact_load_15m.md) for grain, measures,
-quality rules, daylight-saving behavior and verification results.
+L'acquisition des exports, le déclenchement du pipeline et l'actualisation Power BI restent manuels. Il n'y a ni ordonnanceur, ni cloud, ni SLA de fraîcheur Elia validé. Les statistiques de qualité sur de grands fichiers peuvent consommer beaucoup de mémoire. L'historique des corrections conserve les anciennes valeurs, mais l'appartenance complète de chaque ligne à tous ses exports antérieurs n'est pas reconstruite depuis la seule table courante. Les prochaines évolutions envisageables sont l'acquisition automatisée, la surveillance de fraîcheur après validation d'un seuil, l'orchestration et l'évaluation de volumes plus importants.

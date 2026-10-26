@@ -1,123 +1,58 @@
-﻿# Data quality and failure tracking (step C)
+# Qualité des données ODS001
 
-## Manual migration
+Ce guide décrit les règles **actuellement exécutées** par Python, leurs périmètres et les observations datées. Les statuts analytiques du fait dbt sont détaillés dans [fact_load_15m.md](fact_load_15m.md).
 
-Do not run ingestion with the new code until migration 03 is approved and applied.
-The read-only historical quality command works without migration 03.
+## Niveaux et périmètres
 
-Review sql/03_add_quality_tracking.sql. Apply it once, after scripts 01 and 02,
-using an authorized schema owner. From the repository root, explicitly choose
-the intended host and database (psql must be on PATH):
+La validation structurelle refuse les en-têtes, clés, dates ou nombres invalides avant l'écriture des observations. Les règles de qualité produisent des résultats avec identifiant, version, dénominateur, nombre d'anomalies, exemples et sévérité. Un `ERROR` bloque le lot. Un `WARNING` n'empêche pas le commit ; il signale une anomalie ou une incertitude à examiner. Les résultats sont des **occurrences de règles**, ni un nombre de lignes distinctes ni un volume de MWh.
 
-    psql -X -h localhost -p 5432 -U energy_app -d belgian_energy -v ON_ERROR_STOP=1 -f sql/03_add_quality_tracking.sql
+Chaque ingestion évalue deux périmètres dans la transaction :
 
-This command is provided for manual execution, not executed by the application.
-Use the actual schema owner if energy_app does not own the tracking table.
-The migration is transactional and not intended to be rerun. It adds two tables,
-an index, an error_type column and changes the default for future started_at
-values. Existing observations, batches and timestamps are not rewritten.
-If migration fails, its transaction rolls back. Deploy code and migration as a
-coordinated change; no automatic downgrade or DROP script is provided.
+| Périmètre | Ce qui est contrôlé |
+| --- | --- |
+| `incoming_file` | Toutes les observations du CSV, y compris `UNCHANGED`. La continuité temporelle du fichier est désactivée si `--input-scope partial`. |
+| `consolidated_range` | Les valeurs stockées pour les clés reçues après insertion/correction, ainsi que les arêtes entre chaque clé reçue et ses voisins stockés immédiats. Ce n'est pas un balayage de toute la base. |
 
-Only guarded integration fixtures automatically apply migration 03, exclusively
-in belgian_energy_test. See integration_tests.md for explicit TEST_PG configuration.
+Les deux périmètres peuvent signaler la **même anomalie**. L'ingestion du 26 octobre 2026 a produit 1 854 occurrences `WARNING` : 927 dans chaque périmètre. Ce total ne signifie pas 1 854 observations distinctes. Le contrôle `technical.consolidated_matches_input` est bloquant si une clé reçue manque ou si ses valeurs stockées diffèrent du fichier accepté. Une erreur consolidée annule les inserts, corrections, historiques et rapports de succès. Un rapport d'échec `consolidated_range` peut porter `evaluation_state=rolled_back` : il décrit un état transactionnel abandonné, pas les valeurs actuellement stockées.
 
-## Rule contract, version 1
+## Règles du pipeline
 
-quality_ods001.evaluate_quality accepts the ten typed, UTC-normalized business
-columns produced by parse_row or read from PostgreSQL. Structural parsing,
-required input fields and finite-number validation remain in validate_ods001.
-The quality functions do not mutate inputs. Numeric column indices follow the
-zero-based CSV order: 2=Total Load, 3..8=most-recent/day-ahead forecast triples,
-9=Week-ahead forecast.
-
-| Rule | Severity | Definition |
+| Règle | Sévérité | Interprétation |
 | --- | --- | --- |
-| technical.unique_key | ERROR | All rows participating in a duplicate timestamp/resolution key count as anomalies. |
-| technical.quarter_hour | ERROR | Resolution must be PT15M; UTC minute divisible by 15; zero seconds/microseconds. |
-| technical.continuity | WARNING | Consecutive distinct timestamps differ from 15 minutes. Counts gap intervals, not estimated missing rows. |
-| completeness.N.historical | WARNING for 2/9, ERROR otherwise | NULL at or before as_of minus 24 hours. |
-| completeness.N.pending | WARNING | NULL after that cutoff; pending publication or future observation, not asserted to be historical data loss. |
-| business.N.negative | WARNING | Available numeric value below zero. |
-| business.N.outlier | WARNING | Absolute deviation from median exceeds 6 * 1.4826 * median absolute deviation (MAD). At least 20 available values and MAD > 0 required. |
-| business.3.interval / business.6.interval | WARNING | P10 <= forecast <= P90 is false, including reversed bounds. Only complete triples are evaluated. |
-| technical.ingestion | ERROR | One failed attempt, with sanitized exception class. Counts attempts, not source rows. |
+| `technical.unique_key`, `technical.quarter_hour` | `ERROR` | Clé UTC/résolution unique ; instants alignés au quart d'heure et `PT15M`. |
+| `technical.continuity`, `technical.consolidated_continuity` | `WARNING` | Écart entre instants consécutifs du fichier continu, ou entre voisins stockés touchant une clé entrante. Pas d'inférence au-delà des bornes. |
+| `completeness.N.historical` | `WARNING` pour les deux champs nullable, `ERROR` pour les champs requis | Valeur `NULL` à ou avant `as_of - 24 h`. Les champs requis sont normalement interceptés au parsing. |
+| `completeness.N.pending` | `WARNING` | Valeur `NULL` après cette coupure ; future ou en attente de publication, sans conclure à une perte historique. |
+| `business.N.negative`, `business.N.outlier` | `WARNING` | Valeur négative ; écart à la médiane supérieur à six fois le MAD ajusté, avec au moins 20 valeurs et MAD non nul. |
+| `business.3.interval`, `business.6.interval` | `WARNING` | Prévision hors de son intervalle P10/P90 ou bornes inversées, lorsque les trois valeurs existent. |
+| `technical.ingestion`, `technical.consolidated_matches_input` | `ERROR` | Tentative échouée ou incohérence entre entrée acceptée et stockage consolidé. |
 
-The 24-hour grace period is an initial configurable-in-code policy, not a proven
-Elia publication SLA. Missing future forecasts are reported separately, not
-silently omitted. Re-evaluation with an explicit as_of makes aging reproducible.
-The rule version must change if thresholds or semantics change.
+La **complétude technique** signifie que les clés, valeurs obligatoires et contraintes de format ont passé les contrôles. Elle ne prouve pas la **complétude métier** : couverture temporelle attendue, publication effective des mesures et valeurs interprétables. La continuité ne couvre que les instants observés dans les périmètres décrits ci-dessus. Le seuil de grâce de 24 heures pour les `NULL` est une règle actuelle du code, **pas un SLA Elia validé**. Les seuils d'anomalie statistique restent exploratoires et ne remplacent ni ne corrigent les valeurs.
 
-Outliers are exploratory: global batch median/MAD ignores seasonality. Zero MAD
-or small samples produce evaluated_count=0. Negative values and the known 846 MW
-forecast are preserved. No imputation, clipping, deletion or replacement occurs.
-Forecast interval comparisons with missing fields are excluded from their
-denominator; completeness reports cover those missing values.
+Les timestamps d'entrée comportent un décalage explicite et sont normalisés en UTC. L'heure civile belge est obtenue avec `Europe/Brussels` dans les modèles dbt. À l'automne, deux instants UTC distincts peuvent partager le même quart d'heure local ; conserver le timestamp UTC et l'offset évite leur confusion. Voir [dimensions temporelles](temporal_dimensions.md).
 
-Continuity is scoped to the supplied batch, not all database history; endpoint
-coverage outside its min/max is not inferred. Disable continuity for a sparse
-future incremental input and evaluate it separately over the consolidated range.
-This does not implement incremental ingestion.
+## Rapports et historique
 
-## Persistence and transactions
+`staging.quality_run` conserve le batch, la date d'analyse, `as_of`, le périmètre et les paramètres ; `staging.quality_result` conserve les règles et leurs résultats. Les rapports sont ajoutés, jamais écrasés. `staging.elia_load_correction` conserve les huit anciennes et nouvelles mesures et les batchs de provenance pour chaque correction autorisée. Les valeurs inchangées gardent leur producteur précédent.
 
-quality_run records the ingestion batch, analysis time, as_of, scope and policy
-parameters. quality_result records rule identifier/version, ERROR or WARNING,
-evaluated and anomaly counts and up to five timestamp/value examples. Repeated
-analyses append new runs; previous reports are never overwritten.
+Après correction, `ingestion_batch_id` désigne le producteur de la **version courante** ; filtrer la table d'observations par un ancien batch ne reconstitue donc pas son export initial. Utiliser les rapports sauvegardés et le CSV original immuable identifié par SHA-256. Le mode `historical` du diagnostic lit les rapports existants ; le mode `current` réévalue seulement les versions courantes encore attribuées au batch. Voir [exploitation](operations.md) et [corrections](authorized_corrections.md).
 
-1. Register and commit RUNNING with clock_timestamp().
-2. Parse the bounded input, evaluate rules and COPY within one data transaction.
-3. Blocking rules or SQL errors roll back all new observations.
-4. Success commits observations, quality report and SUCCESS together.
-5. On failure, commit FAILED and sanitized error_type after rollback. Save the
-   failure report in another transaction so report persistence failure cannot
-   undo FAILED. Preserve the original exception and attach a note if tracking fails.
+## Constats historiques à ne pas confondre avec les règles
 
-Durations for new attempts use real started_at/finished_at clocks. Old durations
-cannot be repaired reliably and are left unchanged. SHA-256 SUCCESS deduplication
-is unchanged; FAILED attempts may be retried.
+L'investigation de l'export étudié a relevé **7 charges réelles historiques manquantes**, **727 charges réelles en attente**, **192 prévisions week-ahead historiques manquantes** et une prévision historique incompatible avec son intervalle P10/P90 (la valeur 846 MW du 24 juin 2015). Quatre charges manquent à la première occurrence de l'heure locale répétée le 31 octobre 2021 ; la cause de cette observation n'est **pas établie**. Ces nombres décrivent un examen daté et ne sont ni des seuils ni des invariants du pipeline.
 
-An unreadable file cannot be hashed/registered. Connection loss, process kill or
-an ambiguous commit can leave RUNNING; automatic recovery is not implemented.
-A known committed SUCCESS is never relabeled FAILED. Failure report persistence
-is best effort after the durable failure status. Concurrent ingestions remain
-uncoordinated.
+La fraîcheur des dernières mesures réelles a été examinée par une requête SQL avec un seuil **provisoire de 24 heures**. Ce contrôle de fraîcheur de publication n'est pas automatisé et ce seuil n'a pas été validé comme SLA Elia. Il est distinct de la coupure `as_of - 24 h` utilisée par la règle de complétude des valeurs `NULL`. Une surveillance périodique de fraîcheur, après validation d'un horizon de publication, reste une évolution possible.
 
-Inputs are currently buffered to compute exact median/MAD and batch-wide rules.
-This increases memory use versus the previous streaming-only parser. It is
-appropriate for the current bounded historical export; larger inputs will need
-a separate streaming or SQL strategy. No external dependency was added.
+Exemple de diagnostic ponctuel **en lecture seule**, à interpréter selon l'heure de publication réelle de la source :
 
-## Historical data: no CSV re-import
+```sql
+SELECT max(timestamp_utc) AS derniere_charge_reelle_utc,
+       now() - max(timestamp_utc) AS retard_apparent,
+       now() - max(timestamp_utc) > interval '24 hours' AS depasse_seuil_provisoire
+FROM staging.elia_load
+WHERE total_load_mw IS NOT NULL AND timestamp_utc <= now();
+```
 
-Find the desired successful batch using a read-only SQL query:
+## Schéma et vérification
 
-    SELECT batch_id, source_file, rows_loaded, started_at
-    FROM staging.ingestion_batch WHERE status='SUCCESS' ORDER BY batch_id;
-
-Then analyze it, substituting the actual batch identifier and explicit reference
-time (example below). The command sets a repeatable-read, read-only transaction:
-
-    .\.venv\Scripts\python.exe -B src/check_quality_ods001.py --batch-id 1 --as-of 2026-10-18T12:00:00+00:00
-
-The output is JSON. To append the report after migration approval/application,
-explicitly add --persist. This writes only quality tables, not observations or
-existing ingestion batches:
-
-    .\.venv\Scripts\python.exe -B src/check_quality_ods001.py --batch-id 1 --as-of 2026-10-18T12:00:00+00:00 --persist
-
-Future sparse-batch evaluations can use --no-continuity. The application never
-executes a migration. Historical reports are batch-scoped; they do not infer
-provenance beyond the existing ingestion_batch_id.
-
-## Verification
-
-    .\.venv\Scripts\ruff.exe check --no-cache .
-    .\.venv\Scripts\ruff.exe format --check --no-cache .
-    .\.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -ra
-
-Existing rollback tests retain their scenarios, but now expect an additional
-durable FAILED batch rather than disappearance of the failed attempt.
-Integration tests also cover warning persistence, historical analysis without
-observation changes, quality rejection, post-COPY failure and report outage.
+Sur une nouvelle base, appliquer manuellement `sql/01_create_schema.sql` à `sql/04_add_incremental_tracking.sql` dans l'ordre, après revue et avec le compte propriétaire approprié. Sur une base existante, examiner les prérequis de chaque migration ; elles ne sont ni lancées par Python ni destinées à être rejouées. La migration qualité est `sql/03_add_quality_tracking.sql` ; le [contrat de schéma](incremental_contract.md) détaille la migration 04. Les tests PostgreSQL utilisent exclusivement la base jetable décrite dans [integration_tests.md](integration_tests.md). Les rapports et diagnostics courants sont détaillés dans [operations.md](operations.md).

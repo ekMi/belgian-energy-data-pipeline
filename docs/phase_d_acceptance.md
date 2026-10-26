@@ -1,4 +1,6 @@
-﻿# Phase D acceptance and consolidated quality — D5
+# Historical consolidated quality acceptance
+
+> Historical design and validation record. Statements in future tense describe the implementation stage at that time. For current operation, see [README](../README.md), [operations](operations.md) and [data quality](data_quality.md).
 
 ## Current behavior
 

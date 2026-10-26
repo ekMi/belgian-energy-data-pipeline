@@ -1,4 +1,6 @@
-﻿# Incremental ingestion contract — D1
+# Historical incremental schema contract
+
+> Historical design and validation record. Statements in future tense describe the implementation stage at that time. For current operation, see [README](../README.md), [operations](operations.md) and [data quality](data_quality.md).
 
 ## Scope and migration order
 

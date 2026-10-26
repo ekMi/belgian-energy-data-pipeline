@@ -1,4 +1,10 @@
-﻿# Incremental preview — D2
+# Incremental preview
+
+Le mécanisme décrit ici est en service. Les références D1/D2/D3/D4 plus bas
+conservent le raisonnement et les vérifications historiques de sa mise en place.
+L'ingestion actuelle reclassifie toujours le fichier sous verrou et peut
+appliquer des corrections explicitement autorisées ; voir
+[opérations](operations.md) et [corrections](authorized_corrections.md).
 
 ## Command
 
@@ -91,9 +97,9 @@ No absent observation is deleted or classified as a deletion.
 ## Reproducibility and limits
 
 The query sees a consistent PostgreSQL snapshot, but this is a preview, not a
-reservation. D3/D4 must classify again under their future concurrency policy
-before applying changes. No ingestion advisory lock or correction authorization
-is implemented in D2.
+reservation. Ingestion classifies the file again under its advisory lock before
+applying changes. Preview neither grants correction authorization nor holds
+the ingestion lock.
 
 Input headers are checked again while copying; empty input is rejected. SHA-256
 is checked before and after reading. Keep exports immutable while previewing:

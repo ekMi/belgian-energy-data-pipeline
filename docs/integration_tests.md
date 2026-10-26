@@ -54,7 +54,8 @@ Set these variables in the terminal used to run pytest:
 
 The password is passed through the process environment and is never printed by
 the fixtures. Do not commit credentials or use pytest --showlocals with secrets
-in the environment or fixture variables. No .env loader is installed.
+in the environment or fixture variables. Test fixtures use only explicit
+TEST_PG variables and do not load .env.
 
 All five variables must be present and nonempty. Missing variables explicitly
 skip integration tests. A configured unauthorized database name, wrong server
@@ -89,6 +90,11 @@ After testing, remove the password from this terminal's environment:
 
 ## Coverage and limits
 
+The examples below illustrate the integration scope. For the full current
+scope, inspect tests/integration/ and the historical
+[consolidated quality acceptance](phase_d_acceptance.md). All configured
+integration tests use the disposable database described above.
+
 The integration scenarios use tiny synthetic CSVs, never the historical export:
 
 - Successful COPY, exact UTC timestamps, values, row count, SUCCESS status,
@@ -107,12 +113,13 @@ COPY, commits, rollbacks and SQL constraints use real Psycopg/PostgreSQL. No
 SQLite or simulated database replaces an integration test. Separate unit tests
 use mocks only to verify the database identity safety guard.
 
-Failed ingestion rolls back observations and retains a FAILED batch. Fixtures
-apply migration 03 only in the authorized test database. See data_quality.md.
-Concurrent ingestion, retries, incremental loads, correction history and
-persistent quality controls are outside step B.
+Failed ingestion rolls back observations and retains a FAILED batch. Current
+ingestion fixtures apply migrations 01-04 only in the authorized test database.
+Migration-specific cases start at schema 03 to test migration 04 itself. The
+suite also covers concurrency, incremental loads, corrections and quality
+reports; see the cases under tests/integration/.
 
-## Results in the implementation environment
+## Historical initial test result
 
 The integration suite was collected but not executed against PostgreSQL because
 none of the TEST_PG variables were configured. The 18 integration cases were

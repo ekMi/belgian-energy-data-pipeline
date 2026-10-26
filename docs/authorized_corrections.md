@@ -1,4 +1,4 @@
-﻿# Authorized and historized corrections — D4
+# Authorized and historized corrections
 
 ## Default and authorization
 
@@ -99,6 +99,9 @@ an old ingestion_batch_id no longer reconstructs that batch after corrections;
 consult saved reports and raw exports for original input analysis.
 
 ## Tests and current verification
+
+The counts and missing-TEST_PG statement below describe the implementation
+session, not the current total test count or a fresh database validation.
 
     .\.venv\Scripts\python.exe -B -m pytest -p no:cacheprovider -ra
     .\.venv\Scripts\ruff.exe check --no-cache .
