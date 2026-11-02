@@ -5,7 +5,12 @@ from threading import Event
 import pytest
 
 import ingest_ods001
-from ingest_ods001 import INGESTION_LOCK, ChangedObservationsError, ingest_csv
+from ingest_ods001 import (
+    INGESTION_LOCK,
+    ChangedObservationsError,
+    IngestionResult,
+    ingest_csv,
+)
 from merge_ods001 import preview_csv
 
 pytestmark = pytest.mark.integration
@@ -25,19 +30,21 @@ def counters(conn):
 
 
 def test_new_unchanged_and_mixed(test_database, csv_file, rows):
-    assert ingest_csv(csv_file(rows[:2], "first.csv")) == 2
+    assert ingest_csv(csv_file(rows[:2], "first.csv")) == IngestionResult(1, 2, 2, 0, 0)
     assert counters(test_database) == ("SUCCESS", 2, 2, 2, 0, 0)
     old = observations(test_database)
-    assert ingest_csv(csv_file(rows[2:], "new.csv")) == 2
+    assert ingest_csv(csv_file(rows[2:], "new.csv")) == IngestionResult(2, 2, 2, 0, 0)
     assert counters(test_database) == ("SUCCESS", 2, 2, 2, 0, 0)
-    assert ingest_csv(csv_file(rows[::-1], "reordered.csv")) == 4
+    assert ingest_csv(csv_file(rows[::-1], "reordered.csv")) == IngestionResult(
+        3, 4, 0, 4, 0
+    )
     assert counters(test_database) == ("SUCCESS", 4, 4, 0, 4, 0)
     assert observations(test_database)[:2] == old
     extra = rows[0].copy()
     extra[0] = "2025-01-02T01:00:00+01:00"
-    assert (
-        ingest_csv(csv_file([rows[0], extra], "mixed.csv"), input_scope="partial") == 2
-    )
+    assert ingest_csv(
+        csv_file([rows[0], extra], "mixed.csv"), input_scope="partial"
+    ) == IngestionResult(4, 2, 1, 1, 0)
     assert counters(test_database) == ("SUCCESS", 2, 2, 1, 1, 0)
     assert len(observations(test_database)) == 5
     assert observations(test_database)[:2] == old
@@ -75,7 +82,7 @@ def test_changed_rejects_entire_batch(test_database, csv_file, rows, old, new):
         == 1
     )
     # Failed ingestion must release the session lock and permit a later load.
-    assert ingest_csv(csv_file([rows[1]], "valid.csv")) == 1
+    assert ingest_csv(csv_file([rows[1]], "valid.csv")).rows_received == 1
 
 
 def test_partial_scope_recorded_in_quality(test_database, csv_file, rows):
@@ -165,8 +172,12 @@ def test_concurrent_ingestions_are_serialized(
             assert not second_acquired.is_set()
         finally:
             release_first.set()
-        assert one.result(timeout=10) == 2
-        assert two.result(timeout=10) == (None if same_file else 3)
+        assert one.result(timeout=10).rows_received == 2
+        second = two.result(timeout=10)
+        if same_file:
+            assert second is None
+        else:
+            assert second.rows_received == 3
     assert second_acquired.is_set()
     assert len(observations(test_database)) == (2 if same_file else 4)
     assert test_database.execute(

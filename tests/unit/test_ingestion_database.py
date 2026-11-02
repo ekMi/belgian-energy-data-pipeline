@@ -1,6 +1,7 @@
 """The ingestion target is checked before permanent database writes."""
 
 from contextlib import nullcontext
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import MagicMock, Mock
 
@@ -72,3 +73,19 @@ def test_wrong_connected_database_never_starts_batch(monkeypatch):
 
     connection.execute.assert_called_once_with("SELECT current_database()")
     checksum.assert_not_called()
+
+
+def test_cli_uses_received_count_and_silences_skipped_file(monkeypatch, capsys):
+    result = ingest_ods001.IngestionResult(7, 1234, 2, 1231, 1)
+    monkeypatch.setattr(ingest_ods001.sys, "argv", ["ingest_ods001.py"])
+    monkeypatch.setattr(ingest_ods001, "ingest_csv", lambda *args, **kwargs: result)
+
+    ingest_ods001.main()
+    assert capsys.readouterr().out == "Ingestion successful: 1,234 accepted rows\n"
+
+    monkeypatch.setattr(ingest_ods001, "ingest_csv", lambda *args, **kwargs: None)
+    ingest_ods001.main()
+    assert capsys.readouterr().out == ""
+
+    with pytest.raises(FrozenInstanceError):
+        result.rows_received = 0

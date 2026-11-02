@@ -73,6 +73,12 @@ A different hash containing only unchanged observations creates a SUCCESS batch,
 with rows_inserted=0, without changing observation provenance. The return value
 and CLI count represent accepted input, not inserted observations.
 
+Current Python API: `ingest_csv()` returns an immutable `IngestionResult` after
+a successful commit. It contains `batch_id`, `rows_received`, `rows_inserted`,
+`rows_unchanged`, and `rows_updated` (including authorized corrections in the
+current implementation). The CLI displays `rows_received`. A previously
+successful file hash returns `None`; failures raise their existing exceptions.
+
 FAILED:
 - rows_loaded remains zero;
 - if classification completed, rows_received is known and all three committed

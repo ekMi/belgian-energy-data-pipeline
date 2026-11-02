@@ -56,6 +56,14 @@ Python functions preserve exceptions for callers. argparse --help retains its
 normal exit behavior. Successful diagnostics do not fail merely because a saved
 report contains anomalies; inspect their JSON if automating policy decisions.
 
+The Python `ingest_csv()` API returns `IngestionResult | None`. A successful new
+batch returns immutable facts: `batch_id`, `rows_received` (accepted input),
+`rows_inserted` (new observations), `rows_unchanged` (identical observations),
+and `rows_updated` (authorized corrections). The counters are available after
+the successful transaction commits. A previously successful SHA-256 returns
+`None` without a new batch. Failures still raise exceptions. The CLI success
+message uses `rows_received`; an idempotent skip prints no success message.
+
 Ctrl+C during the data transaction rolls back and attempts to persist FAILED
 with error_type=KeyboardInterrupt. An interruption before batch creation leaves
 no batch. Repeated interruption, process kill, SIGTERM or connection loss can

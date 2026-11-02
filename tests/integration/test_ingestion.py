@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import psycopg
 import pytest
 
-from ingest_ods001 import ingest_csv
+from ingest_ods001 import IngestionResult, ingest_csv
 from merge_ods001 import DuplicateInputError
 from validate_ods001 import calculate_sha256
 
@@ -22,7 +22,8 @@ def snapshot(connection):
 
 def test_successful_copy(test_database, csv_file, rows):
     path = csv_file(rows)
-    assert ingest_csv(path) == 4
+    result = ingest_csv(path)
+    assert result == IngestionResult(1, 4, 4, 0, 0)
     records = test_database.execute(
         "SELECT timestamp_utc, resolution_code, total_load_mw, "
         "most_recent_forecast_mw, ingestion_batch_id "
@@ -34,6 +35,7 @@ def test_successful_copy(test_database, csv_file, rows):
     ).fetchall()
     assert len(batch) == 1
     batch_id, source, checksum, status, count, started, finished = batch[0]
+    assert result.batch_id == batch_id
     assert (source, checksum, status, count) == (
         path.name,
         calculate_sha256(path),
@@ -49,7 +51,7 @@ def test_successful_copy(test_database, csv_file, rows):
 
 def test_nullable_values(test_database, csv_file, rows):
     rows[0][2] = rows[0][9] = ""
-    assert ingest_csv(csv_file(rows[:1])) == 1
+    assert ingest_csv(csv_file(rows[:1])).rows_received == 1
     assert test_database.execute(
         "SELECT total_load_mw, most_recent_forecast_mw, most_recent_p10_mw, "
         "most_recent_p90_mw, day_ahead_forecast_mw, day_ahead_p10_mw, "
@@ -59,7 +61,7 @@ def test_nullable_values(test_database, csv_file, rows):
 
 def test_sha256_idempotence(test_database, csv_file, rows):
     path = csv_file(rows)
-    assert ingest_csv(path) == 4
+    assert ingest_csv(path).rows_received == 4
     before = snapshot(test_database)
     assert ingest_csv(path) is None
     # A different filename with identical bytes must also be skipped.
@@ -71,7 +73,7 @@ def test_sha256_idempotence(test_database, csv_file, rows):
 
 @pytest.mark.parametrize("failure", ["duplicate", "invalid_number"])
 def test_rollback_preserves_existing_data(test_database, csv_file, rows, failure):
-    assert ingest_csv(csv_file(rows[:1], "baseline.csv")) == 1
+    assert ingest_csv(csv_file(rows[:1], "baseline.csv")).rows_received == 1
     before = snapshot(test_database)
     incoming = [row.copy() for row in rows[1:]]
     if failure == "duplicate":
@@ -112,7 +114,7 @@ def test_rollback_preserves_existing_data(test_database, csv_file, rows, failure
 def test_database_constraints(
     test_database, csv_file, rows, column, value, expected_error
 ):
-    assert ingest_csv(csv_file(rows[:1])) == 1
+    assert ingest_csv(csv_file(rows[:1])).rows_received == 1
     before = snapshot(test_database)
     # Test SQL directly so Python validation cannot hide a missing SQL constraint.
     with pytest.raises(expected_error), test_database.transaction():
@@ -130,7 +132,7 @@ def test_database_constraints(
     [("status", "UNKNOWN"), ("rows_loaded", -1)],
 )
 def test_batch_constraints(test_database, csv_file, rows, column, value):
-    assert ingest_csv(csv_file(rows[:1])) == 1
+    assert ingest_csv(csv_file(rows[:1])).rows_received == 1
     before = snapshot(test_database)
     with pytest.raises(psycopg.errors.CheckViolation), test_database.transaction():
         test_database.execute(

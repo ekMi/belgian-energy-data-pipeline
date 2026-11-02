@@ -9,7 +9,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_warning_persisted_and_historical_read_only(test_database, csv_file, rows):
-    assert ingest_ods001.ingest_csv(csv_file(rows)) == 4
+    assert ingest_ods001.ingest_csv(csv_file(rows)).rows_received == 4
     batch = test_database.execute(
         "SELECT batch_id FROM staging.ingestion_batch"
     ).fetchone()[0]

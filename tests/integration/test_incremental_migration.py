@@ -137,7 +137,7 @@ def test_preserves_populated_database(test_database, csv_file, rows):
     new_rows = [r.copy() for r in rows]
     for row in new_rows:
         row[0] = row[0].replace("2025-01-01", "2025-01-02")
-    assert ingest_csv(csv_file(new_rows, "next.csv")) == 4
+    assert ingest_csv(csv_file(new_rows, "next.csv")).rows_received == 4
 
 
 def test_duplicate_success_precheck_rolls_back(test_database, csv_file, rows):

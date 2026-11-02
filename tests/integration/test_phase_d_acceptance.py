@@ -4,7 +4,7 @@ import pytest
 
 import ingest_ods001
 from check_quality_ods001 import analyze_batch, historical_reports
-from ingest_ods001 import ChangedObservationsError, ingest_csv
+from ingest_ods001 import ChangedObservationsError, IngestionResult, ingest_csv
 from quality_ods001 import QualityResult
 from validate_ods001 import calculate_sha256
 
@@ -37,17 +37,21 @@ def correct(path):
 
 def test_phase_d_end_to_end(test_database, csv_file, rows):
     first = csv_file(rows[:2], "first.csv")
-    assert ingest_csv(first) == 2
+    assert ingest_csv(first).rows_received == 2
     original_reports = historical_reports(test_database, 1)
     assert len(original_reports) == 2
-    assert ingest_csv(csv_file(rows, "extended.csv")) == 4
-    assert ingest_csv(csv_file(rows[::-1], "unchanged.csv")) == 4
+    assert ingest_csv(csv_file(rows, "extended.csv")).rows_received == 4
+    assert ingest_csv(csv_file(rows[::-1], "unchanged.csv")) == IngestionResult(
+        3, 4, 0, 4, 0
+    )
     before = test_database.execute(
         "SELECT * FROM staging.elia_load ORDER BY timestamp_utc"
     ).fetchall()
     fixed = rows[1].copy()
     fixed[3] = "8200"  # Fix one forecast without modifying the baseline fixture.
-    assert correct(csv_file([fixed], "correction.csv")) == 1
+    assert correct(csv_file([fixed], "correction.csv")) == IngestionResult(
+        4, 1, 0, 0, 1
+    )
     batch = latest_batch(test_database)
     assert report(test_database, batch, "business.3.interval")[0] == 0
     assert report(test_database, batch, "technical.consolidated_matches_input")[0] == 0

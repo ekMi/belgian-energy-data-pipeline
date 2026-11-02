@@ -7,7 +7,7 @@ import psycopg
 import pytest
 
 import ingest_ods001
-from ingest_ods001 import ingest_csv
+from ingest_ods001 import IngestionResult, ingest_csv
 from merge_ods001 import MEASURES
 from validate_ods001 import calculate_sha256
 
@@ -46,7 +46,7 @@ def test_single_measure_history(test_database, csv_file, rows, index):
     changed = rows[0].copy()
     changed[index] = "42"
     path = csv_file([changed, rows[1], rows[2]], "correction.csv")
-    assert authorize(path) == 3
+    assert authorize(path) == IngestionResult(2, 3, 1, 1, 1)
     assert counts(test_database) == ("SUCCESS", 3, 1, 1, 1, 3)
     after = current(test_database)
     assert after[1] == before[1]  # unchanged provenance and values
@@ -253,7 +253,7 @@ def test_concurrent_corrections_recheck_freshness(
             assert attempted.wait(5)
         finally:
             release.set()
-        assert one.result(timeout=10) == 1
+        assert one.result(timeout=10).rows_received == 1
         with pytest.raises(ValueError, match="Stale"):
             two.result(timeout=10)
     assert current(test_database)[0][2] == 12000.0

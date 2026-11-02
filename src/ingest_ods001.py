@@ -6,6 +6,7 @@ import re
 import sys
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,6 +34,15 @@ from validate_ods001 import calculate_sha256
 # Session lock: distinct from the integration fixture's (81002, 1).
 INGESTION_LOCK = (81001, 1)
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IngestionResult:
+    batch_id: int
+    rows_received: int
+    rows_inserted: int
+    rows_unchanged: int
+    rows_updated: int
 
 
 class ChangedObservationsError(ValueError):
@@ -90,7 +100,7 @@ def ingest_csv(
     correction_reason: str | None = None,
     extracted_at: datetime | None = None,
     source_reference: str | None = None,
-) -> int | None:
+) -> IngestionResult | None:
     if input_scope not in ("continuous", "partial"):
         raise ValueError("input_scope must be continuous or partial")
     validate_authorization(authorized_sha256, correction_reason, extracted_at)
@@ -324,7 +334,13 @@ def ingest_csv(
             updated,
             time.monotonic() - started,
         )
-    return received
+    return IngestionResult(
+        batch_id=batch_id,
+        rows_received=received,
+        rows_inserted=inserted,
+        rows_unchanged=classification.rows_unchanged,
+        rows_updated=updated,
+    )
 
 
 def main() -> None:
@@ -338,7 +354,7 @@ def main() -> None:
     parser.add_argument("--extracted-at", type=datetime.fromisoformat)
     parser.add_argument("--source-reference")
     args = parser.parse_args()
-    count = ingest_csv(
+    result = ingest_csv(
         args.csv_path,
         input_scope=args.input_scope,
         authorized_sha256=args.authorize_sha256,
@@ -346,8 +362,8 @@ def main() -> None:
         extracted_at=args.extracted_at,
         source_reference=args.source_reference,
     )
-    if count is not None:
-        print(f"Ingestion successful: {count:,} accepted rows")
+    if result is not None:
+        print(f"Ingestion successful: {result.rows_received:,} accepted rows")
 
 
 if __name__ == "__main__":
