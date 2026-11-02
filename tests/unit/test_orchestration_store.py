@@ -103,3 +103,39 @@ def test_connected_to_wrong_database(fake_db, monkeypatch):
     queries = [call.args[0] for call in conn.execute.call_args_list]
 
     assert not any("FROM staging.ingestion_batch" in query for query in queries)
+
+
+@pytest.mark.parametrize(
+    ("db_row", "expected"),
+    [
+        ((2, 2, None), True),
+        ((2, 2, 2), False),
+        ((3, 2, 2), False),
+        ((3, 3, 2), True),
+        ((None, None, None), False),
+    ],
+)
+def test_analytics_sync_status(fake_db, db_row, expected):
+    conn, _, verify_mock = fake_db
+
+    # Simuler les trois valeurs retournées par PostgreSQL
+    conn.execute.return_value.fetchone.return_value = db_row
+
+    result = store.get_analytics_sync_status()
+
+    assert result.latest_ingestion_batch == db_row[0]
+    assert result.latest_relevant_batch == db_row[1]
+    assert result.latest_dbt_batch == db_row[2]
+    assert result.dbt_required is expected
+
+    # Vérifier que la transaction est en lecture seule
+    assert conn.execute.call_args_list[0].args[0] == ("SET TRANSACTION READ ONLY")
+
+    # Vérifier que la requête consulte les deux tables
+    query = conn.execute.call_args_list[1].args[0]
+
+    assert "staging.ingestion_batch" in query
+    assert "staging.dbt_build_run" in query
+
+    # Vérifier que le contrôle de destination a été effectué
+    verify_mock.assert_called_once()

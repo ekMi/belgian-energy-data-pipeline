@@ -11,6 +11,15 @@ SHA256 = "a" * 64
 CSV_PATH = Path("fake.csv")
 
 
+@pytest.fixture(autouse=True)
+def mock_sync_status(monkeypatch):
+    monkeypatch.setattr(
+        orchestration,
+        "get_analytics_sync_status",
+        lambda: SimpleNamespace(dbt_required=False),
+    )
+
+
 def test_already_ingested_skips_preview(monkeypatch):
     monkeypatch.setattr(
         orchestration,
@@ -165,3 +174,37 @@ def test_cli_outputs_json(monkeypatch, capsys):
     assert result["action"] == "NO_CHANGE"
     assert result["successful_batch_id"] == 1
     assert result["rows_new"] is None
+
+
+def test_already_ingested_but_dbt_pending(monkeypatch):
+    monkeypatch.setattr(
+        orchestration,
+        "calculate_sha256",
+        lambda path: SHA256,
+    )
+
+    monkeypatch.setattr(
+        orchestration,
+        "find_successful_batch",
+        lambda sha: 2,
+    )
+
+    monkeypatch.setattr(
+        orchestration,
+        "get_analytics_sync_status",
+        lambda: SimpleNamespace(dbt_required=True),
+    )
+
+    def unexpected_preview(path):
+        pytest.fail("Preview should not be called")
+
+    monkeypatch.setattr(
+        orchestration,
+        "preview_csv",
+        unexpected_preview,
+    )
+
+    plan = orchestration.plan_csv(CSV_PATH)
+
+    assert plan.successful_batch_id == 2
+    assert plan.action == "RECOVER_DBT"

@@ -8,7 +8,10 @@ from pathlib import Path
 from merge_ods001 import preview_csv
 from operations import run_cli
 from orchestration_decision import decide_action
-from orchestration_store import find_successful_batch
+from orchestration_store import (
+    find_successful_batch,
+    get_analytics_sync_status,
+)
 from validate_ods001 import calculate_sha256
 
 
@@ -30,11 +33,14 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
     # 2. Check whether the file was already ingested
     batch_id = find_successful_batch(checksum)
 
+    sync_status = get_analytics_sync_status()
+
     # 3. A successfully ingested file needs no new ingestion
     if batch_id is not None:
         action = decide_action(
             already_ingested=True,
             rows_changed=None,
+            dbt_recovery_pending=sync_status.dbt_required,
         )
 
         return PipelinePlan(
@@ -56,6 +62,7 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
     action = decide_action(
         already_ingested=False,
         rows_changed=preview.rows_changed,
+        dbt_recovery_pending=sync_status.dbt_required,
     )
 
     return PipelinePlan(
