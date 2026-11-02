@@ -95,6 +95,12 @@ def test_database(monkeypatch, request):
                     )
                 )
                 admin.commit()
+                admin.execute(
+                    (PROJECT_ROOT / "sql/05_add_dbt_build_tracking.sql").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                admin.commit()
             yield admin
         finally:
             admin.rollback()

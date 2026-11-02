@@ -122,6 +122,44 @@ untouched by this command; inspect configuration without printing credentials.
 Direct manual dbt.exe build bypasses this preflight. dbt build also runs the
 project tests. See [dbt setup](dbt_setup.md).
 
+## Tracked dbt rebuild attempts (schema 05)
+
+`staging.dbt_build_run` records one row per attempt. `start_build(target_batch_id)`
+requires a SUCCESS ingestion batch and creates RUNNING; `mark_success(build_id)`
+or `mark_failed(build_id, error_type)` completes it exactly once. Failure types
+are limited to `DBT_BUILD_FAILED`, `DBT_PREFLIGHT_FAILED`, `INTERRUPTED`, and
+`UNKNOWN_FAILURE`; raw exceptions and connection details must never be stored.
+`latest_success()` returns the SUCCESS attempt with the highest
+`target_batch_id`, breaking ties by the highest `build_id`; `list_builds()`
+provides attempt history. A later build covering an older batch cannot lower
+the analytical watermark. FAILED and RUNNING do not establish an analytical
+watermark. An interrupted process can leave
+RUNNING indefinitely. A retry creates a new build ID.
+
+The target batch is the last successful ingestion used as a reference for a
+full dbt rebuild, including validated observations from earlier batches. An
+ingestion SUCCESS only proves staging was updated. dbt SUCCESS proves analytics
+was rebuilt only when the caller records it after dbt actually finishes. If dbt
+finishes but the tracking update is lost, the attempt remains unconfirmed and
+must be rebuilt later. Older manual dbt runs are not backfilled: until the first
+tracked SUCCESS, analytical synchronization is unproven. Legacy ingestion
+counters that are NULL do not prove the absence of business changes.
+
+This release provides storage only. It does not invoke dbt or connect the store
+to the preview. To apply migration 05 later, stop pipeline writes, verify the
+intended database and role without exposing credentials, confirm 01-04 already
+applied, then run `sql/05_add_dbt_build_tracking.sql` once with psql against the
+explicitly selected `belgian_energy` database. For example, in an authorized
+terminal with PGHOST, PGPORT and PGUSER set and credentials supplied securely:
+
+    psql -X -v ON_ERROR_STOP=1 -d belgian_energy -f sql/05_add_dbt_build_tracking.sql
+
+The script owns its transaction and rolls back on SQL failure. Do not apply it
+automatically. The target batch alone does not fence concurrent ingestion during
+dbt; a global lock is planned for C3.3. A model change can also make a previously
+successful build stale without changing its stored status. Review and rebuild
+after model changes. The current store does not record a model revision.
+
 Read-only diagnostics:
 
     .\.venv\Scripts\python.exe -B src/check_db_connection.py

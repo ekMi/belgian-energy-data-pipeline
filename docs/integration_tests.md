@@ -114,8 +114,10 @@ SQLite or simulated database replaces an integration test. Separate unit tests
 use mocks only to verify the database identity safety guard.
 
 Failed ingestion rolls back observations and retains a FAILED batch. Current
-ingestion fixtures apply migrations 01-04 only in the authorized test database.
-Migration-specific cases start at schema 03 to test migration 04 itself. The
+integration fixtures apply migrations 01-05 only in the authorized test database.
+Migration-specific cases start at schema 03 to test migration 04 itself and do
+not install 05 early. The dbt tracking cases cover attempt transitions, retry
+history, watermark reads, invalid targets, SQL constraints and rollback. The
 suite also covers concurrency, incremental loads, corrections and quality
 reports; see the cases under tests/integration/.
 
