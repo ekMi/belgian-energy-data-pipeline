@@ -1,5 +1,7 @@
 """Read-only access to pipeline execution metadata."""
 
+from contextlib import nullcontext
+
 import psycopg
 
 from config import (
@@ -41,7 +43,7 @@ def find_successful_batch(file_sha256: str) -> int | None:
         return row[0] if row is not None else None
 
 
-def get_analytics_sync_status() -> AnalyticsSyncStatus:
+def get_analytics_sync_status(connection=None) -> AnalyticsSyncStatus:
     """Read analytical synchronization state from PostgreSQL."""
 
     params = get_connection_params()
@@ -49,8 +51,11 @@ def get_analytics_sync_status() -> AnalyticsSyncStatus:
     if params["dbname"] != INGESTION_DATABASE:
         raise RuntimeError("Unauthorized database target")
 
-    with psycopg.connect(**params) as conn:
-        conn.execute("SET TRANSACTION READ ONLY")
+    with (
+        psycopg.connect(**params) if connection is None else nullcontext(connection)
+    ) as conn:
+        if connection is None:
+            conn.execute("SET TRANSACTION READ ONLY")
 
         verify_database_target(
             conn,

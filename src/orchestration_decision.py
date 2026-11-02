@@ -5,12 +5,8 @@ def decide_action(
     *,
     already_ingested: bool,
     rows_changed: int | None,
-    dbt_recovery_pending: bool = False,
 ) -> str:
     """Return the next action without executing any processing."""
-
-    if dbt_recovery_pending:
-        return "RECOVER_DBT"
 
     if already_ingested:
         return "NO_CHANGE"

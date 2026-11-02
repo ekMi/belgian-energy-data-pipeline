@@ -19,9 +19,9 @@ def guarded_dbt(test_database, monkeypatch, tmp_path):
     monkeypatch.setattr(dbt_guard, "get_connection_params", lambda: params.copy())
     monkeypatch.setattr(dbt_guard, "INGESTION_DATABASE", "belgian_energy_test")
     monkeypatch.setattr(dbt_guard, "_verify_profile", lambda: None)
-    executable = tmp_path / "simulated-dbt"
+    executable = tmp_path / "simulated-python.exe"
     executable.touch()
-    monkeypatch.setattr(dbt_guard, "DBT_EXE", executable)
+    monkeypatch.setattr(dbt_guard, "DBT_PYTHON", executable)
     return params
 
 

@@ -125,3 +125,75 @@ processus si une garantie au-del� de la dur�e de vie du parent devient n�cessair
 Les tests `tests/integration/test_pipeline_lock.py` simulent dbt et exigent les
 cinq variables `TEST_PGHOST`, `TEST_PGPORT`, `TEST_PGDATABASE`, `TEST_PGUSER`,
 `TEST_PGPASSWORD`. La fixture refuse toute base autre que `belgian_energy_test`.
+
+## Pipeline local complet
+
+Depuis la racine du dépôt, avec les migrations 01 à 05 appliquées et
+l'environnement configuré selon `docs/dbt_setup.md` :
+
+```powershell
+.\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/ods001.csv
+```
+
+Prévisualiser un nouvel export sans ingestion ni dbt et examiner ses différences :
+
+```powershell
+.\.venv\Scripts\python.exe -B src/orchestration_preview.py data/raw/new_export.csv
+.\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --full-report --output data/processed/preview_full.json
+```
+
+Sans autorisation, les corrections historiques arrêtent le pipeline avec
+`AWAITING_APPROVAL` et le code CLI 1 : aucune observation nouvelle ou corrigée
+de cet export n'est appliquée et dbt n'est pas lancé. Après vérification manuelle
+du rapport et du fichier exact, fournir son SHA-256 (`file_sha256` de la
+prévisualisation, 64 caractères hexadécimaux minuscules) et un motif non vide :
+
+```powershell
+.\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/new_export.csv --authorize-sha256 "HASH_DU_FICHIER_VERIFIE" --correction-reason "Corrections historiques Elia vérifiées"
+```
+
+Les options `--extracted-at "2025-02-01T12:00:00+01:00"` (date d'extraction avec
+fuseau explicite) et `--source-reference "Référence de l'export Elia"` sont
+facultatives. L'autorisation reste manuelle et liée au contenu exact du fichier ;
+ne pas la réutiliser dans une tâche récurrente. Une autorisation incomplète, mal
+formée ou liée à un autre hash est refusée. L'ingestion revérifie le hash et
+recalcule les différences sous verrou ; elle conserve tous ses contrôles de
+qualité et de fraîcheur. Les observations nouvelles et les corrections avec
+leur historique sont validées dans la même transaction. Voir aussi le
+[guide des corrections](docs/authorized_corrections.md).
+
+Le pipeline recalcule ensuite la synchronisation analytique sous le verrou partagé
+`(81001, 1)` via `locked_build()`. Une reconstruction déjà en attente n'empêche
+pas une nouvelle ingestion. Le batch cible, le début et la confirmation de la
+tentative dbt utilisent la connexion qui détient ce verrou. Chaque appel exécute
+au maximum un `dbt build`, suivi `RUNNING` puis `SUCCESS` ou `FAILED`.
+
+La sortie JSON expose `status`, `ingestion_batch_id`, `target_batch_id`, `build_id`,
+une catégorie d'erreur éventuelle, `rows_new` et `rows_changed`. Ces deux compteurs
+indiquent les différences prévisualisées pour `AWAITING_APPROVAL`, ou les insertions
+et corrections validées pour une nouvelle ingestion (même si dbt échoue ensuite).
+Ils valent `null` si ces informations sont indisponibles, notamment pour un fichier
+déjà ingéré ou des corrections apparues après la prévisualisation.
+
+Les statuts restent `NO_CHANGE`, `SUCCESS`, `AWAITING_APPROVAL` et `DBT_FAILED`.
+Les deux derniers retournent le code CLI 1 ; les exceptions techniques et les
+arguments d'autorisation invalides sont traités par la frontière CLI sécurisée
+existante (code 1, interruption 130, sans détails de connexion). Les logs vont
+sur stderr. Pour un extrait volontairement discontinu, `--input-scope partial`
+réutilise le contrôle existant.
+
+L'ingestion et dbt acquièrent successivement le même verrou, sans acquisition
+imbriquée. Un autre processus peut intervenir entre ces phases : l'ingestion
+reclasse donc le fichier sous son verrou et dbt relit l'état après acquisition.
+Un fichier déjà connu est revérifié par l'ingestion, qui le saute sans nouveau
+batch. Un CSV refusé arrête cet appel avant dbt.
+
+En cas d'échec dbt, le batch ingéré et les corrections historisées restent validés.
+Relancer le même fichier permet de retenter dbt sans réappliquer les corrections
+ni fournir de nouvelle autorisation. Après succès, un nouveau lancement retourne
+`NO_CHANGE` si la synchronisation est à jour. Un échec de préflight ou d'acquisition
+du verrou intervient avant la création d'une tentative. Un arrêt brutal peut
+laisser une tentative `RUNNING` ; elle ne compte jamais comme un succès et le
+prochain appel peut reconstruire. Si dbt réussit mais que l'enregistrement final
+échoue, le prochain appel peut reconstruire à nouveau. Aucun ordonnanceur,
+surveillance de dossier ou relancement automatique n'est inclus.

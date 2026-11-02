@@ -146,11 +146,11 @@ def test_check_only_skips_build(configured, monkeypatch):
 
 
 def test_build_holds_lock_and_invalidates_session(configured, monkeypatch, tmp_path):
-    _, _, connection = configured
+    params, dbt_dir, connection = configured
     connection.closed = False
-    exe = tmp_path / "dbt.exe"
+    exe = tmp_path / "python.exe"
     exe.touch()
-    monkeypatch.setattr(dbt_guard, "DBT_EXE", exe)
+    monkeypatch.setattr(dbt_guard, "DBT_PYTHON", exe)
     events = []
 
     from contextlib import contextmanager
@@ -166,6 +166,20 @@ def test_build_holds_lock_and_invalidates_session(configured, monkeypatch, tmp_p
 
     def run(*args, **kwargs):
         assert events == ["locked"]
+        assert args[0] == [
+            str(exe),
+            "-I",
+            str(dbt_guard.DBT_ENTRYPOINT),
+            "build",
+            "--project-dir",
+            str(dbt_dir),
+            "--profiles-dir",
+            str(dbt_dir),
+            "--target",
+            dbt_guard.TARGET_NAME,
+        ]
+        assert kwargs["env"] == dbt_guard.dbt_environment(params)
+        assert kwargs["check"] is False
         events.append("subprocess")
         return MagicMock(returncode=0)
 
@@ -178,13 +192,14 @@ def test_build_holds_lock_and_invalidates_session(configured, monkeypatch, tmp_p
     with pytest.raises(RuntimeError, match="no longer active"):
         session.build()
 
+
 @pytest.mark.parametrize("failure", [RuntimeError("simulated launch failure"), 1])
 def test_build_failure_releases_context(configured, monkeypatch, tmp_path, failure):
     _, _, connection = configured
     connection.closed = False
-    exe = tmp_path / "dbt.exe"
+    exe = tmp_path / "python.exe"
     exe.touch()
-    monkeypatch.setattr(dbt_guard, "DBT_EXE", exe)
+    monkeypatch.setattr(dbt_guard, "DBT_PYTHON", exe)
 
     def run(*args, **kwargs):
         if isinstance(failure, Exception):
@@ -195,3 +210,28 @@ def test_build_failure_releases_context(configured, monkeypatch, tmp_path, failu
     with pytest.raises(RuntimeError):
         dbt_guard.guarded_build()
     assert connection.execute.call_args.args[0] == "SELECT pg_advisory_unlock(%s, %s)"
+
+
+@pytest.mark.parametrize("returncode", [1, 2])
+def test_nonzero_exit_is_failure(configured, monkeypatch, returncode):
+    connection = configured[2]
+    connection.closed = False
+    monkeypatch.setattr(
+        dbt_guard.subprocess, "run", lambda *a, **k: MagicMock(returncode=returncode)
+    )
+    with pytest.raises(RuntimeError, match="dbt build failed"):
+        dbt_guard.guarded_build()
+
+
+def test_windows_launch_failure_is_sanitized(configured, monkeypatch):
+    configured[2].closed = False
+    error = OSError("secret-do-not-log")
+    error.winerror = 4551
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(dbt_guard.subprocess, "run", fail)
+    with pytest.raises(RuntimeError, match="launch failed.*WinError 4551") as caught:
+        dbt_guard.guarded_build()
+    assert "secret-do-not-log" not in str(caught.value)

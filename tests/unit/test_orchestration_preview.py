@@ -207,4 +207,26 @@ def test_already_ingested_but_dbt_pending(monkeypatch):
     plan = orchestration.plan_csv(CSV_PATH)
 
     assert plan.successful_batch_id == 2
-    assert plan.action == "RECOVER_DBT"
+    assert plan.action == "NO_CHANGE"
+    assert plan.dbt_required is True
+
+
+@pytest.mark.parametrize("changed,action", [(0, "INGEST"), (3, "AWAITING_APPROVAL")])
+def test_pending_dbt_never_overrides_csv_decision(monkeypatch, changed, action):
+    monkeypatch.setattr(orchestration, "calculate_sha256", lambda path: SHA256)
+    monkeypatch.setattr(orchestration, "find_successful_batch", lambda sha: None)
+    monkeypatch.setattr(
+        orchestration,
+        "get_analytics_sync_status",
+        lambda: SimpleNamespace(dbt_required=True),
+    )
+    monkeypatch.setattr(
+        orchestration,
+        "preview_csv",
+        lambda path: SimpleNamespace(
+            file_sha256=SHA256, rows_new=96, rows_changed=changed
+        ),
+    )
+    plan = orchestration.plan_csv(CSV_PATH)
+    assert plan.action == action
+    assert plan.dbt_required is True

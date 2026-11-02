@@ -17,7 +17,8 @@ from pipeline_lock import pipeline_lock
 PROFILE_NAME = "belgian_energy_analytics"
 TARGET_NAME = "local"
 DBT_DIR = PROJECT_ROOT / "dbt"
-DBT_EXE = PROJECT_ROOT / ".venv-dbt" / "Scripts" / "dbt.exe"
+DBT_PYTHON = PROJECT_ROOT / ".venv-dbt" / "Scripts" / "python.exe"
+DBT_ENTRYPOINT = PROJECT_ROOT / "src" / "dbt_entrypoint.py"
 PG_VARIABLES = ("PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD")
 
 
@@ -132,14 +133,32 @@ class LockedDbtBuild:
         """Wait for dbt while the owning context holds the session lock."""
         if not self.active or self.connection.closed:
             raise RuntimeError("dbt lock context is no longer active")
-        if not DBT_EXE.is_file():
-            raise RuntimeError("Refusing dbt build: dbt executable is unavailable")
-        result = subprocess.run(
-            [str(DBT_EXE), "build", "--project-dir", str(DBT_DIR),
-             "--profiles-dir", str(DBT_DIR), "--target", TARGET_NAME],
-            env=self.environment,
-            check=False,
-        )
+        if not DBT_PYTHON.is_file() or not DBT_ENTRYPOINT.is_file():
+            raise RuntimeError(
+                "Refusing dbt build: dbt Python or entry point is unavailable"
+            )
+        try:
+            result = subprocess.run(
+                [
+                    str(DBT_PYTHON),
+                    "-I",  # Keep src/ and PYTHONPATH out of dbt plugin discovery.
+                    str(DBT_ENTRYPOINT),
+                    "build",
+                    "--project-dir",
+                    str(DBT_DIR),
+                    "--profiles-dir",
+                    str(DBT_DIR),
+                    "--target",
+                    TARGET_NAME,
+                ],
+                env=self.environment,
+                check=False,
+            )
+        except OSError as error:
+            # Do not include OS error text or the environment: either may be sensitive.
+            code = getattr(error, "winerror", None)
+            detail = f" (WinError {code})" if code is not None else ""
+            raise RuntimeError(f"dbt Python subprocess launch failed{detail}") from None
         if result.returncode:
             raise RuntimeError("dbt build failed")
 

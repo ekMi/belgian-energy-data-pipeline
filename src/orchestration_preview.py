@@ -22,6 +22,7 @@ class PipelinePlan:
     rows_new: int | None
     rows_changed: int | None
     action: str
+    dbt_required: bool = False
 
 
 def plan_csv(csv_path: Path) -> PipelinePlan:
@@ -40,7 +41,6 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
         action = decide_action(
             already_ingested=True,
             rows_changed=None,
-            dbt_recovery_pending=sync_status.dbt_required,
         )
 
         return PipelinePlan(
@@ -49,6 +49,7 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
             rows_new=None,
             rows_changed=None,
             action=action,
+            dbt_required=sync_status.dbt_required,
         )
 
     # 4. Preview the file
@@ -62,7 +63,6 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
     action = decide_action(
         already_ingested=False,
         rows_changed=preview.rows_changed,
-        dbt_recovery_pending=sync_status.dbt_required,
     )
 
     return PipelinePlan(
@@ -71,6 +71,7 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
         rows_new=preview.rows_new,
         rows_changed=preview.rows_changed,
         action=action,
+        dbt_required=sync_status.dbt_required,
     )
 
 

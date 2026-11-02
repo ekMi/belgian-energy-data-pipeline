@@ -47,11 +47,11 @@ def _verified(connection, configured_database):
     verify_database_target(connection, configured_database, INGESTION_DATABASE)
 
 
-def start_build(target_batch_id: int) -> DbtBuildRun:
+def start_build(target_batch_id: int, *, connection=None) -> DbtBuildRun:
     """Create a RUNNING attempt for an existing SUCCESS ingestion batch."""
     if isinstance(target_batch_id, bool) or not isinstance(target_batch_id, int):
         raise ValueError("target_batch_id must be an integer")
-    with _connection_context() as conn:
+    with _connection_context(connection=connection) as conn:
         row = conn.execute(
             "SELECT batch_id FROM staging.ingestion_batch "
             "WHERE batch_id=%s AND status='SUCCESS' FOR SHARE",
@@ -67,22 +67,26 @@ def start_build(target_batch_id: int) -> DbtBuildRun:
         return DbtBuildRun(*created)
 
 
-def mark_success(build_id: int) -> DbtBuildRun:
+def mark_success(build_id: int, *, connection=None) -> DbtBuildRun:
     """Finish exactly one RUNNING attempt after the caller confirms dbt success."""
-    return _finish(build_id, "SUCCESS", None)
+    return _finish(build_id, "SUCCESS", None, connection=connection)
 
 
-def mark_failed(build_id: int, error_type: FailureCategory) -> DbtBuildRun:
+def mark_failed(
+    build_id: int, error_type: FailureCategory, *, connection=None
+) -> DbtBuildRun:
     """Finish a RUNNING attempt with an approved, non-sensitive category."""
     if error_type not in FAILURE_CATEGORIES:
         raise ValueError("error_type must be an approved failure category")
-    return _finish(build_id, "FAILED", error_type)
+    return _finish(build_id, "FAILED", error_type, connection=connection)
 
 
-def _finish(build_id: int, status: str, error_type: str | None) -> DbtBuildRun:
+def _finish(
+    build_id: int, status: str, error_type: str | None, *, connection=None
+) -> DbtBuildRun:
     if isinstance(build_id, bool) or not isinstance(build_id, int):
         raise ValueError("build_id must be an integer")
-    with _connection_context() as conn:
+    with _connection_context(connection=connection) as conn:
         row = conn.execute(
             f"UPDATE staging.dbt_build_run "
             f"SET status=%s, finished_at=clock_timestamp(), error_type=%s "
@@ -122,7 +126,12 @@ def list_builds(target_batch_id: int | None = None) -> list[DbtBuildRun]:
 
 
 @contextmanager
-def _connection_context(*, read_only: bool = False):
+def _connection_context(*, read_only: bool = False, connection=None):
+    if connection is not None:
+        params = get_connection_params()
+        _verified(connection, params["dbname"])
+        yield connection
+        return
     conn, configured_database = _connection()
     with conn:
         if read_only:

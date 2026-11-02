@@ -33,28 +33,6 @@ def test_historical_corrections():
     )
 
 
-def test_dbt_recovery_has_priority():
-    assert (
-        decide_action(
-            already_ingested=True,
-            rows_changed=None,
-            dbt_recovery_pending=True,
-        )
-        == "RECOVER_DBT"
-    )
-
-
-def test_dbt_recovery_before_new_ingestion():
-    assert (
-        decide_action(
-            already_ingested=False,
-            rows_changed=0,
-            dbt_recovery_pending=True,
-        )
-        == "RECOVER_DBT"
-    )
-
-
 def test_missing_preview():
     with pytest.raises(ValueError):
         decide_action(
