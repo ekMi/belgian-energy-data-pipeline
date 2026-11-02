@@ -143,3 +143,55 @@ def test_check_only_skips_build(configured, monkeypatch):
     monkeypatch.setattr(dbt_guard.subprocess, "run", build)
     dbt_guard.guarded_build(check_only=True)
     build.assert_not_called()
+
+
+def test_build_holds_lock_and_invalidates_session(configured, monkeypatch, tmp_path):
+    _, _, connection = configured
+    connection.closed = False
+    exe = tmp_path / "dbt.exe"
+    exe.touch()
+    monkeypatch.setattr(dbt_guard, "DBT_EXE", exe)
+    events = []
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def lock(conn):
+        assert conn is connection
+        events.append("locked")
+        try:
+            yield conn
+        finally:
+            events.append("released")
+
+    def run(*args, **kwargs):
+        assert events == ["locked"]
+        events.append("subprocess")
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(dbt_guard, "pipeline_lock", lock)
+    monkeypatch.setattr(dbt_guard.subprocess, "run", run)
+    with dbt_guard.locked_build() as session:
+        session.build()
+        assert session.connection is connection
+    assert events == ["locked", "subprocess", "released"]
+    with pytest.raises(RuntimeError, match="no longer active"):
+        session.build()
+
+@pytest.mark.parametrize("failure", [RuntimeError("simulated launch failure"), 1])
+def test_build_failure_releases_context(configured, monkeypatch, tmp_path, failure):
+    _, _, connection = configured
+    connection.closed = False
+    exe = tmp_path / "dbt.exe"
+    exe.touch()
+    monkeypatch.setattr(dbt_guard, "DBT_EXE", exe)
+
+    def run(*args, **kwargs):
+        if isinstance(failure, Exception):
+            raise failure
+        return MagicMock(returncode=failure)
+
+    monkeypatch.setattr(dbt_guard.subprocess, "run", run)
+    with pytest.raises(RuntimeError):
+        dbt_guard.guarded_build()
+    assert connection.execute.call_args.args[0] == "SELECT pg_advisory_unlock(%s, %s)"

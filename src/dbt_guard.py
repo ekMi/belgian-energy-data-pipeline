@@ -5,11 +5,14 @@ import ipaddress
 import os
 import socket
 import subprocess
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass
 
 import psycopg
 
 from config import INGESTION_DATABASE, PROJECT_ROOT, get_connection_params
 from operations import run_cli
+from pipeline_lock import pipeline_lock
 
 PROFILE_NAME = "belgian_energy_analytics"
 TARGET_NAME = "local"
@@ -72,7 +75,7 @@ def dbt_environment(params: dict[str, str | int]) -> dict[str, str]:
     return environment
 
 
-def preflight() -> dict[str, str]:
+def preflight(connection=None) -> dict[str, str]:
     """Validate configuration, dbt resolution contract and effective connection."""
     params = get_connection_params()
     if params["dbname"] != INGESTION_DATABASE:
@@ -94,7 +97,9 @@ def preflight() -> dict[str, str]:
                 str(params["host"]), port, type=socket.SOCK_STREAM
             )
         }
-        with psycopg.connect(**params) as connection:
+        with (
+            psycopg.connect(**params) if connection is None else nullcontext(connection)
+        ) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     "SELECT current_database(), current_user, "
@@ -115,29 +120,58 @@ def preflight() -> dict[str, str]:
     return dbt_environment(params)
 
 
-def guarded_build(check_only: bool = False) -> None:
+@dataclass
+class LockedDbtBuild:
+    """Valid only inside locked_build(); do not close its connection early."""
+
+    connection: psycopg.Connection
+    environment: dict[str, str]
+    active: bool = True
+
+    def build(self) -> None:
+        """Wait for dbt while the owning context holds the session lock."""
+        if not self.active or self.connection.closed:
+            raise RuntimeError("dbt lock context is no longer active")
+        if not DBT_EXE.is_file():
+            raise RuntimeError("Refusing dbt build: dbt executable is unavailable")
+        result = subprocess.run(
+            [str(DBT_EXE), "build", "--project-dir", str(DBT_DIR),
+             "--profiles-dir", str(DBT_DIR), "--target", TARGET_NAME],
+            env=self.environment,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError("dbt build failed")
+
+
+@contextmanager
+def locked_build():
+    """Expose one protected connection for batch selection, tracking and dbt.
+
+    Commit tracking transactions explicitly before/after build(). Never acquire
+    another pipeline lock within this context. Closing the connection releases it.
+    """
     environment = preflight()
+    params = get_connection_params()
+    with psycopg.connect(**params) as connection:
+        # Recheck the effective target on the actual lock-owning connection.
+        environment = preflight(connection)
+        connection.commit()
+        with pipeline_lock(connection):
+            session = LockedDbtBuild(connection, environment)
+            try:
+                yield session
+            finally:
+                session.active = False
+
+
+def guarded_build(check_only: bool = False) -> None:
     if check_only:
+        preflight()
         print("dbt preflight passed")
         return
-    if not DBT_EXE.is_file():
-        raise RuntimeError("Refusing dbt build: dbt executable is unavailable")
-    result = subprocess.run(
-        [
-            str(DBT_EXE),
-            "build",
-            "--project-dir",
-            str(DBT_DIR),
-            "--profiles-dir",
-            str(DBT_DIR),
-            "--target",
-            TARGET_NAME,
-        ],
-        env=environment,
-        check=False,
-    )
-    if result.returncode:
-        raise RuntimeError("dbt build failed")
+    with locked_build() as session:
+        session.build()
 
 
 def main() -> None:

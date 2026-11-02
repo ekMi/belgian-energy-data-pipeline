@@ -80,3 +80,48 @@ L'API Python `ingest_csv()` renvoie `IngestionResult` apr√®s une ingestion r√©us
 Une ingestion r√©elle du **26 octobre 2026** a trait√© 415 104 observations : 768 ins√©r√©es, 413 276 inchang√©es et 1 060 corrig√©es avec historique (`batch_id=2`, `SUCCESS`). La reconstruction des trois mod√®les dbt et leurs 46 tests a r√©ussi ; Power BI a √©t√© actualis√© manuellement. Ces chiffres sont un r√©sultat dat√©, pas une valeur attendue par chaque ex√©cution. Le rapport de cette ingestion compte 1 854 occurrences `WARNING` sur deux p√©rim√®tres ; voir [qualit√© des donn√©es](docs/data_quality.md) pour √©viter le double comptage.
 
 L'acquisition des exports, le d√©clenchement du pipeline et l'actualisation Power BI restent manuels. Il n'y a ni ordonnanceur, ni cloud, ni SLA de fra√Æcheur Elia valid√©. Les statistiques de qualit√© sur de grands fichiers peuvent consommer beaucoup de m√©moire. L'historique des corrections conserve les anciennes valeurs, mais l'appartenance compl√®te de chaque ligne √† tous ses exports ant√©rieurs n'est pas reconstruite depuis la seule table courante. Les prochaines √©volutions envisageables sont l'acquisition automatis√©e, la surveillance de fra√Æcheur apr√®s validation d'un seuil, l'orchestration et l'√©valuation de volumes plus importants.
+
+### Verrou partagÈ ingestion / dbt
+
+`pipeline_lock.pipeline_lock(conn)` centralise le verrou PostgreSQL exclusif de
+session `(81001, 1)`. L'ingestion conserve son interface `ingestion_lock`.
+Le dÈlai `PIPELINE_LOCK_TIMEOUT` (10 secondes par dÈfaut) est appliquÈ localement
+‡ la transaction d'acquisition ; les commits et rollbacks ultÈrieurs ne libËrent
+pas le verrou de session. Le contexte annule toute transaction encore ouverte
+avant de libÈrer le verrou : valider explicitement les Ècritures ‡ conserver.
+
+Le prochain orchestrateur pourra utiliser :
+
+```python
+from dbt_guard import locked_build
+import dbt_run_store
+
+with locked_build() as session:
+    # DÈterminer le batch cible via session.connection, puis terminer la
+    # transaction de lecture avant les Ècritures du store sur sa connexion.
+    target_batch_id = ...
+    session.connection.commit()
+    attempt = dbt_run_store.start_build(target_batch_id)
+    session.build()  # attend la fin du sous-processus sous le mÍme verrou
+    dbt_run_store.mark_success(attempt.build_id)
+```
+
+Cet exemple illustre le pÈrimËtre de protection, pas la gestion complËte des
+Èchecs : enregistrer Ègalement FAILED dans ce contexte si le lancement Èchoue.
+Les mÈthodes actuelles du store ouvrent et valident leurs propres transactions,
+sans acquÈrir de verrou pipeline. Elles restent donc protÈgÈes par la session
+parente. Ne pas rappeler `guarded_build()` ou `locked_build()` dans ce contexte :
+utiliser `session.build()` pour Èviter d'attendre son propre verrou sur une autre
+connexion. Ne pas garder de verrous de lignes non validÈs sur `session.connection`
+pendant un appel au store. La connexion exposÈe permet aussi d'intÈgrer plus tard
+les opÈrations de suivi directement sur cette connexion, sans nouvelle acquisition.
+
+Le verrou est coopÈratif : un dbt lancÈ directement le contourne. Si le parent
+est tuÈ brutalement ou perd sa connexion PostgreSQL alors que dbt continue,
+PostgreSQL libËre le verrou sans garantir l'arrÍt du sous-processus ; une autre
+exÈcution peut alors commencer. Cette limite nÈcessite une supervision des
+processus si une garantie au-del‡ de la durÈe de vie du parent devient nÈcessaire.
+
+Les tests `tests/integration/test_pipeline_lock.py` simulent dbt et exigent les
+cinq variables `TEST_PGHOST`, `TEST_PGPORT`, `TEST_PGDATABASE`, `TEST_PGUSER`,
+`TEST_PGPASSWORD`. La fixture refuse toute base autre que `belgian_energy_test`.

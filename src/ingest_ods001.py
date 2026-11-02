@@ -3,9 +3,8 @@
 import argparse
 import logging
 import re
-import sys
+import sys as sys
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,12 +26,13 @@ from merge_ods001 import (
     update_corrections,
 )
 from operations import run_cli
+from pipeline_lock import PIPELINE_LOCK
+from pipeline_lock import pipeline_lock as ingestion_lock
 from quality_ods001 import QualityResult, evaluate_quality, has_errors
 from quality_store import COLUMNS, save_results
 from validate_ods001 import calculate_sha256
 
-# Session lock: distinct from the integration fixture's (81002, 1).
-INGESTION_LOCK = (81001, 1)
+INGESTION_LOCK = PIPELINE_LOCK  # Compatibility for existing callers.
 logger = logging.getLogger(__name__)
 
 
@@ -48,32 +48,6 @@ class IngestionResult:
 class ChangedObservationsError(ValueError):
     """Changed observations require explicit file-bound authorization."""
 
-
-@contextmanager
-def ingestion_lock(conn):
-    # Set a bounded wait without changing caller-wide/server settings.
-    with conn.transaction():
-        conn.execute(
-            "SELECT set_config('lock_timeout', %s, true)",
-            (f"{positive_seconds('PIPELINE_LOCK_TIMEOUT', 10)}s",),
-        )
-        conn.execute("SELECT pg_advisory_lock(%s, %s)", INGESTION_LOCK)
-    try:
-        yield
-    finally:
-        # Connection closure also releases the session lock if communication fails.
-        original_error = sys.exception()
-        try:
-            if not conn.closed:
-                conn.rollback()
-                with conn.transaction():
-                    conn.execute("SELECT pg_advisory_unlock(%s, %s)", INGESTION_LOCK)
-        except Exception:
-            if original_error is None:
-                raise
-            original_error.add_note(
-                "Explicit unlock failed; connection closure releases the lock."
-            )
 
 
 def validate_authorization(authorized_sha256, correction_reason, extracted_at):
