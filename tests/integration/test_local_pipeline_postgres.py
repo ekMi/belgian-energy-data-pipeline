@@ -59,6 +59,141 @@ def test_ingestion_build_retry_and_noop(pipeline_database, csv_file, rows, fail)
     assert not orchestration_store.get_analytics_sync_status().dbt_required
 
 
+@pytest.mark.parametrize("kind", ["new", "corrections", "mixed"])
+@pytest.mark.parametrize("dbt_fails", [False, True])
+def test_automatic_full_export_history_and_replay(
+    pipeline_database, csv_file, rows, kind, dbt_fails
+):
+    from correction_policy import AUTOMATIC_CORRECTION_REASON
+
+    conn, run = pipeline_database
+    if kind != "new":
+        ingest_ods001.ingest_csv(csv_file(rows[:2], "baseline.csv"))
+    before = conn.execute(
+        "SELECT * FROM staging.elia_load ORDER BY timestamp_utc"
+    ).fetchall()
+    conn.commit()
+    incoming = [row.copy() for row in (rows[:2] if kind == "corrections" else rows)]
+    if kind != "new":
+        incoming[0][2] = "10001"
+    path = csv_file(incoming, "full.csv")
+    run.return_value.returncode = int(dbt_fails)
+    result = local_pipeline.run_pipeline(path, source_policy="elia-full")
+    assert result.status == ("DBT_FAILED" if dbt_fails else "SUCCESS")
+    expected_new = {"new": 4, "corrections": 0, "mixed": 2}[kind]
+    expected_changed = int(kind != "new")
+    assert (result.rows_new, result.rows_changed) == (expected_new, expected_changed)
+    assert conn.execute(
+        "SELECT status,correction_policy,correction_authorized_sha256,"
+        "correction_reason,extracted_at FROM staging.ingestion_batch WHERE batch_id=%s",
+        (result.ingestion_batch_id,),
+    ).fetchone() == (
+        "SUCCESS",
+        "authorized",
+        calculate_sha256(path),
+        AUTOMATIC_CORRECTION_REASON,
+        None,
+    )
+    after = conn.execute(
+        "SELECT * FROM staging.elia_load ORDER BY timestamp_utc"
+    ).fetchall()
+    history = conn.execute(
+        "SELECT previous_batch_id,correction_batch_id,"
+        + ",".join("old_" + measure for measure in merge_ods001.MEASURES)
+        + ","
+        + ",".join("new_" + measure for measure in merge_ods001.MEASURES)
+        + " FROM staging.elia_load_correction"
+    ).fetchall()
+    assert len(history) == expected_changed
+    if expected_changed:
+        assert history[0][:2] == (before[0][-1], result.ingestion_batch_id)
+        assert history[0][2:10] == before[0][2:10]
+        assert history[0][10:] == after[0][2:10]
+        assert before[1] == after[1]  # Preserve unchanged values and provenance.
+    batches = conn.execute("SELECT count(*) FROM staging.ingestion_batch").fetchone()
+    conn.commit()
+    run.return_value.returncode = 0
+    assert local_pipeline.run_pipeline(path, source_policy="elia-full").status == (
+        "SUCCESS" if dbt_fails else "NO_CHANGE"
+    )
+    assert (
+        local_pipeline.run_pipeline(path, source_policy="elia-full").status
+        == "NO_CHANGE"
+    )
+    assert (
+        conn.execute("SELECT count(*) FROM staging.ingestion_batch").fetchone()
+        == batches
+    )
+    assert conn.execute(
+        "SELECT count(*) FROM staging.elia_load_correction"
+    ).fetchone() == (expected_changed,)
+    conn.commit()
+
+
+@pytest.mark.parametrize("failure", ["invalid", "quality", "stale", "consolidated"])
+def test_automatic_policy_preserves_data_on_rejection(
+    pipeline_database, csv_file, rows, monkeypatch, failure
+):
+    from quality_ods001 import QualityResult
+
+    conn, run = pipeline_database
+    ingest_ods001.ingest_csv(
+        csv_file(rows[:2], "baseline.csv"),
+        extracted_at=datetime(2025, 2, 1, tzinfo=UTC),
+    )
+    before = conn.execute(
+        "SELECT * FROM staging.elia_load ORDER BY timestamp_utc"
+    ).fetchall()
+    conn.commit()
+    rows[0][2] = "10001"
+    path = csv_file(rows, "full.csv")
+    options = {"source_policy": "elia-full"}
+    if failure == "invalid":
+        path.write_text("invalid header\n", encoding="utf-8")
+    elif failure == "stale":
+        options["extracted_at"] = datetime(2025, 1, 1, tzinfo=UTC)
+    else:
+        blocking = [QualityResult("test.blocking", "ERROR", 1, 1, [])]
+        if failure == "quality":
+            monkeypatch.setattr(
+                ingest_ods001, "evaluate_quality", lambda *a, **k: blocking
+            )
+        else:
+            monkeypatch.setattr(
+                ingest_ods001, "check_consolidated", lambda *a, **k: (blocking, {})
+            )
+    with pytest.raises(ValueError):
+        local_pipeline.run_pipeline(path, **options)
+    run.assert_not_called()
+    assert (
+        conn.execute(
+            "SELECT * FROM staging.elia_load ORDER BY timestamp_utc"
+        ).fetchall()
+        == before
+    )
+    assert conn.execute(
+        "SELECT count(*) FROM staging.elia_load_correction"
+    ).fetchone() == (0,)
+    conn.commit()
+
+
+def test_partial_export_still_waits_for_manual_authorization(
+    pipeline_database, csv_file, rows
+):
+    conn, run = pipeline_database
+    ingest_ods001.ingest_csv(csv_file(rows[:2], "baseline.csv"))
+    rows[0][2] = "10001"
+    result = local_pipeline.run_pipeline(
+        csv_file(rows, "partial.csv"), input_scope="partial"
+    )
+    assert result.status == "AWAITING_APPROVAL"
+    run.assert_not_called()
+    assert conn.execute(
+        "SELECT count(*) FROM staging.elia_load_correction"
+    ).fetchone() == (0,)
+    conn.commit()
+
+
 def test_new_csv_ingested_before_pending_rebuild(pipeline_database, csv_file, rows):
     conn, run = pipeline_database
     ingest_ods001.ingest_csv(csv_file(rows))

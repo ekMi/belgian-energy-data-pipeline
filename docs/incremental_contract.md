@@ -70,6 +70,12 @@ batch-to-observation membership or upstream publication versioning is deferred.
 
 ## Correction policy
 
+Current application policy: trusted complete Elia exports declared `elia-full`
+automatically supply the exact hash and an explicitly automatic reason through
+this existing `authorized` schema contract. Other inputs remain restrictive.
+The future-stage manual-review statements below are historical; see the
+[current correction policy](authorized_corrections.md). No schema change is needed.
+
 correction_policy is deny or authorized. NULL means unspecified/legacy and must
 be treated as deny by future application code.
 

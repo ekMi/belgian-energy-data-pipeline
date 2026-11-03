@@ -57,3 +57,23 @@ def test_already_ingested_with_differences():
         )
         == "NO_CHANGE"
     )
+
+
+@pytest.mark.parametrize("changed", [0, 3])
+def test_trusted_full_export_can_be_ingested(changed):
+    assert (
+        decide_action(
+            already_ingested=False, rows_changed=changed, source_policy="elia-full"
+        )
+        == "INGEST"
+    )
+
+
+def test_partial_trusted_declaration_is_rejected():
+    with pytest.raises(ValueError, match="partial"):
+        decide_action(
+            already_ingested=False,
+            rows_changed=3,
+            source_policy="elia-full",
+            input_scope="partial",
+        )

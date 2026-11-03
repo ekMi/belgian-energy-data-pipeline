@@ -59,7 +59,7 @@ report contains anomalies; inspect their JSON if automating policy decisions.
 The Python `ingest_csv()` API returns `IngestionResult | None`. A successful new
 batch returns immutable facts: `batch_id`, `rows_received` (accepted input),
 `rows_inserted` (new observations), `rows_unchanged` (identical observations),
-and `rows_updated` (authorized corrections). The counters are available after
+and `rows_updated` (automatic trusted-source or exceptionally authorized corrections). The counters are available after
 the successful transaction commits. A previously successful SHA-256 returns
 `None` without a new batch. Failures still raise exceptions. The CLI success
 message uses `rows_received`; an idempotent skip prints no success message.
@@ -104,8 +104,32 @@ Preview creates a temporary PostgreSQL table and rolls back. The full report
 writes a local JSON file; --full-report and --output must be used together.
 Ingestion reclassifies the CSV independently of preview. A successful SHA-256
 replay is skipped; different bytes with identical observations can create a
-new SUCCESS batch with zero inserts. For CHANGED observations, inspect the
-complete report and follow [authorized corrections](authorized_corrections.md).
+new SUCCESS batch with zero inserts. Trusted full Elia ODS001 exports use
+`--source-policy elia-full`: NEW and CHANGED are accepted automatically, with
+old/new correction history and all technical quality checks retained. Other
+CSVs default to `restricted`; partial imports remain restrictive. See
+[correction policy](authorized_corrections.md).
+
+The trust declaration is shared by ingestion, the full pipeline, preview and
+Prefect. It does not authenticate the file: the operator must supply the latest
+complete Elia export. Inbox presence and file age/stability only concern copy
+readiness. Never invent `extracted_at`; known older extractions still fail the
+existing freshness check. An unknown date remains NULL. `elia-full` cannot be
+combined with partial scope or manual hash/reason authorization.
+
+Normal trusted full-export commands (write operations):
+
+    .\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/full_export.csv --source-policy elia-full
+    .\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/full_export.csv --source-policy elia-full
+
+The automatic reason stored with the exact file hash is
+`Automatic update from authoritative Elia ODS001 full export`, not a claim of
+human approval. The existing schema stores it using `correction_policy=authorized`.
+No migration or retrospective history change is required. The pipeline returns
+SUCCESS/NO_CHANGE, or DBT_FAILED if the analytical rebuild fails after ingestion;
+committed ingestion is retained. AWAITING_APPROVAL remains possible only under
+the restrictive policy. Both Prefect deployments select `elia-full`; use
+`source_policy=restricted` for an exceptional partial run of the manual deployment.
 
 After an accepted ingestion, check the dbt target, rebuild the analytical
 tables (database write), and manually refresh the Power BI report connected
@@ -167,7 +191,7 @@ Read-only diagnostics:
     .\.venv\Scripts\python.exe -B src/check_quality_ods001.py --batch-id 1 --mode historical
     .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv
 
-Complete preview report for review before authorizing historical corrections:
+Complete preview report for diagnostics or exceptional restricted-source review:
 
     .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/ods001_20261026.csv --full-report --output data/processed/preview_full_20261026.json
 
@@ -192,7 +216,9 @@ separately and preserve the child exit code. Example PowerShell wrapper:
 
 Choose a separate log destination per execution and manage retention externally.
 No log file is created by the Python code itself. Do not permanently embed a
-correction authorization in a recurring job. Approvals remain bound to reviewed
+manual correction authorization in a recurring job. Trusted full exports instead
+select `--source-policy elia-full`, which binds its automatic reason to the
+hash calculated under the lock. Exceptional manual approvals remain bound to reviewed
 file bytes. Hash idempotence is preserved, and lock contention fails after the
 configured wait rather than running overlapping cooperative ingestions.
 

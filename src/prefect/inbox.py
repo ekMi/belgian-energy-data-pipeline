@@ -11,11 +11,10 @@ from uuid import uuid4
 from prefect import flow
 from src.prefect.pipeline import PROJECT_ROOT, PipelineExecutionError, energy_pipeline
 
-DIRECTORIES = ("inbox", "processing", "archive", "pending_approval", "failed")
+DIRECTORIES = ("inbox", "processing", "archive", "failed")
 DESTINATIONS = {
     "SUCCESS": "archive",
     "NO_CHANGE": "archive",
-    "AWAITING_APPROVAL": "pending_approval",
     "DBT_FAILED": "failed",
 }
 MIN_AGE_SECONDS = 60
@@ -133,7 +132,12 @@ def energy_inbox() -> dict:
         print(f"CSV pris en charge : {source}")
         try:
             # A direct flow call creates a subflow and waits for its terminal result.
-            result = energy_pipeline(str(source))
+            result = energy_pipeline(str(source), source_policy="elia-full")
+            if result["status"] not in {"SUCCESS", "NO_CHANGE"}:
+                raise PipelineExecutionError(
+                    "Résultat inattendu pour un export complet Elia de confiance",
+                    result,
+                )
         except Exception as error:
             result = (
                 error.result

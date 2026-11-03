@@ -4,6 +4,12 @@
 
 ## Prerequisites and commands
 
+Current trusted-full-export behavior supersedes the historical D3 rejection
+policy below: `--source-policy elia-full` accepts and historizes corrections
+automatically. Generic and partial inputs remain restrictive. See the
+[current correction policy](authorized_corrections.md); this document preserves
+the earlier implementation record.
+
 Migration 04 must already be applied manually before running this version of
 ingestion. The application never applies migrations. No correction handling
 or history writer is enabled by D3.

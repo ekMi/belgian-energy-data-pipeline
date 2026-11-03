@@ -150,8 +150,9 @@ def test_cli_outputs_json(monkeypatch, capsys):
         action="NO_CHANGE",
     )
 
-    def fake_plan_csv(path):
+    def fake_plan_csv(path, **kwargs):
         assert path == CSV_PATH
+        assert kwargs == {"source_policy": "restricted", "input_scope": "continuous"}
         return expected
 
     monkeypatch.setattr(
@@ -230,3 +231,19 @@ def test_pending_dbt_never_overrides_csv_decision(monkeypatch, changed, action):
     plan = orchestration.plan_csv(CSV_PATH)
     assert plan.action == action
     assert plan.dbt_required is True
+
+
+def test_trusted_preview_with_changes_plans_ingestion(monkeypatch):
+    monkeypatch.setattr(orchestration, "calculate_sha256", lambda path: SHA256)
+    monkeypatch.setattr(orchestration, "find_successful_batch", lambda sha: None)
+    monkeypatch.setattr(
+        orchestration,
+        "preview_csv",
+        lambda path: SimpleNamespace(
+            file_sha256=SHA256,
+            rows_new=96,
+            rows_changed=3,
+        ),
+    )
+    plan = orchestration.plan_csv(CSV_PATH, source_policy="elia-full")
+    assert (plan.action, plan.rows_new, plan.rows_changed) == ("INGEST", 96, 3)

@@ -20,7 +20,7 @@ def setup(monkeypatch):
         rows_new=2,
         rows_changed=1,
     )
-    monkeypatch.setattr(pipeline, "plan_csv", lambda path: state)
+    monkeypatch.setattr(pipeline, "plan_csv", lambda path, **kwargs: state)
     ingestion = Mock(
         return_value=SimpleNamespace(batch_id=2, rows_inserted=2, rows_updated=0)
     )
@@ -222,6 +222,7 @@ def test_authorized_corrections_and_metadata_forwarded(setup):
     setup.ingestion.return_value.rows_updated = 1
     options = dict(
         input_scope="partial",
+        source_policy="restricted",
         authorized_sha256="a" * 64,
         correction_reason="reviewed",
         extracted_at=datetime(2025, 2, 1, tzinfo=UTC),
@@ -276,6 +277,7 @@ def test_cli_forwards_authorization(monkeypatch):
     run.assert_called_once_with(
         Path("input.csv"),
         input_scope="partial",
+        source_policy="restricted",
         authorized_sha256="a" * 64,
         correction_reason="reviewed",
         extracted_at=datetime.fromisoformat("2025-02-01T12:00:00+01:00"),
@@ -292,3 +294,45 @@ def test_naive_extraction_date_refused_before_preview(setup, monkeypatch):
         pipeline.run_pipeline(Path("input.csv"), extracted_at=datetime(2025, 2, 1))
     preview.assert_not_called()
     setup.ingestion.assert_not_called()
+
+
+@pytest.mark.parametrize("new,changed", [(3, 0), (0, 2), (3, 2)])
+@pytest.mark.parametrize("dbt_fails", [False, True])
+def test_trusted_full_export_ingests_without_human_authorization(
+    setup, new, changed, dbt_fails
+):
+    setup.ingestion.return_value.rows_inserted = new
+    setup.ingestion.return_value.rows_updated = changed
+    if dbt_fails:
+        setup.build.side_effect = RuntimeError("dbt failure")
+    result = pipeline.run_pipeline(Path("full.csv"), source_policy="elia-full")
+    assert result.status == ("DBT_FAILED" if dbt_fails else "SUCCESS")
+    assert (result.rows_new, result.rows_changed) == (new, changed)
+    assert result.ingestion_batch_id == 2
+    assert setup.ingestion.call_args.kwargs["source_policy"] == "elia-full"
+    assert setup.ingestion.call_args.kwargs["authorized_sha256"] is None
+    assert setup.ingestion.call_args.kwargs["extracted_at"] is None
+    setup.build.assert_called_once()
+    assert setup.events == [
+        "ingest",
+        "lock",
+        *([] if dbt_fails else ["build"]),
+        "unlock",
+    ]
+
+
+def test_partial_corrections_remain_awaiting_review(setup):
+    setup.state.action = "AWAITING_APPROVAL"
+    assert (
+        pipeline.run_pipeline(Path("partial.csv"), input_scope="partial").status
+        == "AWAITING_APPROVAL"
+    )
+    assert setup.events == []
+
+
+def test_full_export_policy_cannot_be_applied_to_partial_input(setup):
+    with pytest.raises(ValueError, match="partial"):
+        pipeline.run_pipeline(
+            Path("partial.csv"), input_scope="partial", source_policy="elia-full"
+        )
+    assert setup.events == []

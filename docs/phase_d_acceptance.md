@@ -4,6 +4,12 @@
 
 ## Current behavior
 
+The acceptance record below predates automatic trusted-source corrections.
+Today, complete Elia exports explicitly declared `elia-full` use the same
+historized merge without human approval; other sources and partial imports
+remain restrictive. The quality gates described here remain unchanged.
+See the [current correction policy](authorized_corrections.md).
+
 Ingestion runs two quality scopes in the same observation/history transaction:
 incoming_file (the extraction), then consolidated_range (stored values after
 INSERT/UPDATE). Both reports and SUCCESS commit together. Existing reports are

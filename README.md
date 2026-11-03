@@ -6,10 +6,10 @@ Pipeline local et reproductible pour analyser la consommation électrique belge 
 
 - Validation des CSV ODS001, normalisation des instants en UTC et identification des fichiers par SHA-256.
 - Prévisualisation des différences `NEW`, `UNCHANGED` et `CHANGED`, avec export JSON exhaustif sur demande.
-- Ingestion transactionnelle et incrémentale : insertion des nouveautés, conservation des lignes identiques et correction historique uniquement avec un hash et un motif explicites. Les anciennes valeurs sont historisées.
+- Ingestion transactionnelle et incrémentale : insertion des nouveautés, conservation des lignes identiques et corrections historisées automatiquement pour les exports complets Elia de confiance (`--source-policy elia-full`). Les autres CSV et les imports partiels gardent la politique restrictive.
 - Contrôles qualité sur le fichier reçu et sur les valeurs consolidées concernées. Les erreurs bloquent l'ingestion ; les avertissements sont conservés avec leur périmètre et leur date de référence.
 - Modèles dbt `dim_date`, `dim_time` et `fact_load_15m` dans `analytics`, puis visualisation Power BI.
-- Orchestration locale Prefect 3.9.1 : lancement manuel ou surveillance de `data/inbox/`, un CSV par passage, puis classement pour archive, revue ou diagnostic. Le Cron toutes les cinq minutes est livré désactivé ; serveur et worker doivent rester actifs. Voir le [guide Prefect](docs/prefect.md).
+- Orchestration locale Prefect 3.9.1 : lancement manuel ou surveillance de `data/inbox/`, un export complet Elia par passage, puis classement pour archive ou diagnostic. Le Cron toutes les cinq minutes est livré désactivé ; serveur et worker doivent rester actifs. Voir le [guide Prefect](docs/prefect.md).
 
 ```mermaid
 flowchart LR
@@ -47,7 +47,10 @@ Les commandes ci-dessous partent de la racine du dépôt. Le guide [d'exploitati
 .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --sample-size 5
 .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --full-report --output data/processed/preview_full.json
 
-# Écriture dans staging : ingestion sans correction historique autorisée
+# Écriture dans staging : dernier export complet Elia identifié comme fiable
+.\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/full_export.csv --source-policy elia-full
+
+# Import partiel : corrections interdites sans autorisation exceptionnelle
 .\.venv\Scripts\python.exe -B src/ingest_ods001.py data/raw/new_export.csv --input-scope partial
 
 # Précontrôle en lecture seule, puis reconstruction protégée dans analytics
@@ -60,7 +63,9 @@ Les commandes ci-dessous partent de la racine du dépôt. Le guide [d'exploitati
 .\.venv\Scripts\ruff.exe format --check --no-cache .
 ```
 
-Une réexécution du **même fichier** déjà enregistré `SUCCESS` est ignorée grâce au SHA-256. Un fichier de contenu différent mais aux observations identiques peut créer un nouveau batch `SUCCESS` avec zéro insertion. Pour une correction, examiner le rapport complet puis fournir le hash exact et un motif selon le [guide des corrections](docs/authorized_corrections.md). Ne pas réutiliser une autorisation dans une tâche récurrente.
+Une réexécution du **même fichier** déjà enregistré `SUCCESS` est ignorée grâce au SHA-256. Un fichier de contenu différent mais aux observations identiques peut créer un nouveau batch `SUCCESS` avec zéro insertion. En mode `elia-full`, les corrections utilisent automatiquement le hash et le motif `Automatic update from authoritative Elia ODS001 full export` ; ce motif ne prétend pas à une revue humaine. Le mode par défaut des CLI est `restricted` : les corrections y nécessitent une autorisation exceptionnelle selon le [guide des corrections](docs/authorized_corrections.md).
+
+Les deux deployments Prefect déclarent les exports complets Elia comme source de confiance. L'opérateur doit y fournir le **dernier export complet provenant d'Elia**. Un nom de fichier, le dépôt dans inbox et le contrôle de stabilité ne prouvent ni son authenticité ni sa fraîcheur. Aucune date d'extraction n'est inventée ; une date réelle fournie reste contrôlée. `elia-full` avec `--input-scope partial` est refusé. Les contrôles existants de schéma, de continuité, de qualité et d'intégrité restent inchangés ; ils ne prouvent pas à eux seuls la couverture complète d'Elia.
 
 L'API Python `ingest_csv()` renvoie `IngestionResult` après une ingestion réussie : `batch_id` identifie le batch, `rows_received` compte les observations acceptées, `rows_inserted` les nouvelles, `rows_unchanged` les identiques et `rows_updated` les corrections autorisées. Ces compteurs décrivent le résultat validé en base. Un fichier déjà traité avec succès renvoie `None` sans créer de batch ; une erreur continue de lever une exception. La CLI affiche toujours le nombre d'observations acceptées pour un nouveau batch.
 
@@ -72,7 +77,7 @@ L'API Python `ingest_csv()` renvoie `IngestionResult` après une ingestion réus
 | Serveur, worker, deployments et cycle de vie des CSV | [Prefect](docs/prefect.md) |
 | Règles, périmètres et constats de qualité | [Qualité des données](docs/data_quality.md) |
 | Prévisualisation et rapport complet | [Prévisualisation](docs/incremental_preview.md) |
-| Autorisation et historisation des corrections | [Corrections](docs/authorized_corrections.md) |
+| Corrections automatiques et autorisation exceptionnelle | [Corrections](docs/authorized_corrections.md) |
 | Configuration et modèles analytiques | [dbt](docs/dbt_setup.md), [dimensions temporelles](docs/temporal_dimensions.md), [fait de charge](docs/fact_load_15m.md) |
 | Tests PostgreSQL et base dédiée | [Tests d'intégration](docs/integration_tests.md) |
 | Contrats et validations antérieurs | [Contrat du schéma](docs/incremental_contract.md), [ingestion incrémentale](docs/incremental_ingestion.md), [validation des deux périmètres](docs/phase_d_acceptance.md) |
@@ -134,31 +139,37 @@ Depuis la racine du dépôt, avec les migrations 01 à 05 appliquées et
 l'environnement configuré selon `docs/dbt_setup.md` :
 
 ```powershell
-.\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/ods001.csv
+.\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/ods001.csv --source-policy elia-full
 ```
 
 Prévisualiser un nouvel export sans ingestion ni dbt et examiner ses différences :
 
 ```powershell
-.\.venv\Scripts\python.exe -B src/orchestration_preview.py data/raw/new_export.csv
+.\.venv\Scripts\python.exe -B src/orchestration_preview.py data/raw/new_export.csv --source-policy elia-full
 .\.venv\Scripts\python.exe -B src/merge_ods001.py data/raw/new_export.csv --full-report --output data/processed/preview_full.json
 ```
 
-Sans autorisation, les corrections historiques arrêtent le pipeline avec
-`AWAITING_APPROVAL` et le code CLI 1 : aucune observation nouvelle ou corrigée
-de cet export n'est appliquée et dbt n'est pas lancé. Après vérification manuelle
-du rapport et du fichier exact, fournir son SHA-256 (`file_sha256` de la
-prévisualisation, 64 caractères hexadécimaux minuscules) et un motif non vide :
+Avec `--source-policy elia-full`, les observations nouvelles et les corrections
+sont acceptées et historisées dans la même transaction, sous réserve des contrôles
+techniques. Aucune validation humaine n'est requise pour ces mises à jour normales.
+La prévisualisation planifie `INGEST`, même en présence de `CHANGED`.
+
+Pour un CSV générique ou partiel, conserver `restricted` (défaut CLI). Sans
+autorisation, `CHANGED` arrête alors le pipeline avec `AWAITING_APPROVAL`, code 1,
+avant ingestion et dbt. Une autorisation exceptionnelle reste liée au fichier
+exact et à une revue manuelle :
 
 ```powershell
-.\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/new_export.csv --authorize-sha256 "HASH_DU_FICHIER_VERIFIE" --correction-reason "Corrections historiques Elia vérifiées"
+.\.venv\Scripts\python.exe -B src/local_pipeline.py data/raw/partial_export.csv --input-scope partial --authorize-sha256 "HASH_DU_FICHIER_VERIFIE" --correction-reason "Corrections exceptionnelles vérifiées"
 ```
 
 Les options `--extracted-at "2025-02-01T12:00:00+01:00"` (date d'extraction avec
 fuseau explicite) et `--source-reference "Référence de l'export Elia"` sont
-facultatives. L'autorisation reste manuelle et liée au contenu exact du fichier ;
-ne pas la réutiliser dans une tâche récurrente. Une autorisation incomplète, mal
-formée ou liée à un autre hash est refusée. L'ingestion revérifie le hash et
+facultatives : fournir seulement une date d'extraction réellement connue, jamais
+la date de copie ou de dépôt. L'autorisation exceptionnelle reste manuelle et
+liée au contenu exact ; ne pas la réutiliser dans une tâche récurrente ni la
+combiner avec `elia-full`. Une autorisation incomplète, mal formée ou liée à un
+autre hash est refusée. L'ingestion revérifie le hash et
 recalcule les différences sous verrou ; elle conserve tous ses contrôles de
 qualité et de fraîcheur. Les observations nouvelles et les corrections avec
 leur historique sont validées dans la même transaction. Voir aussi le
@@ -177,8 +188,9 @@ et corrections validées pour une nouvelle ingestion (même si dbt échoue ensui
 Ils valent `null` si ces informations sont indisponibles, notamment pour un fichier
 déjà ingéré ou des corrections apparues après la prévisualisation.
 
-Les statuts restent `NO_CHANGE`, `SUCCESS`, `AWAITING_APPROVAL` et `DBT_FAILED`.
-Les deux derniers retournent le code CLI 1 ; les exceptions techniques et les
+Les statuts normaux d'un export complet de confiance sont `NO_CHANGE`, `SUCCESS`
+et `DBT_FAILED`. `AWAITING_APPROVAL` reste réservé à la politique restrictive.
+`DBT_FAILED` et `AWAITING_APPROVAL` retournent le code CLI 1 ; les exceptions techniques et les
 arguments d'autorisation invalides sont traités par la frontière CLI sécurisée
 existante (code 1, interruption 130, sans détails de connexion). Les logs vont
 sur stderr. Pour un extrait volontairement discontinu, `--input-scope partial`

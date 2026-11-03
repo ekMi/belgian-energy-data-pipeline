@@ -51,7 +51,9 @@ def test_one_csv_in_deterministic_order(local, monkeypatch):
     call = Mock(return_value={"status": "SUCCESS"})
     monkeypatch.setattr(inbox, "energy_pipeline", call)
     inbox.energy_inbox.fn()
-    call.assert_called_once_with(str(root / "data/processing/A.csv"))
+    call.assert_called_once_with(
+        str(root / "data/processing/A.csv"), source_policy="elia-full"
+    )
     assert not first.exists()
     assert (root / "data/inbox/b.csv").exists()
 
@@ -97,7 +99,6 @@ def test_open_windows_file_deferred(local, monkeypatch):
     [
         ("SUCCESS", "archive"),
         ("NO_CHANGE", "archive"),
-        ("AWAITING_APPROVAL", "pending_approval"),
     ],
 )
 def test_business_classification_and_diagnostic(local, monkeypatch, status, directory):
@@ -105,7 +106,8 @@ def test_business_classification_and_diagnostic(local, monkeypatch, status, dire
     source = ready(root)
     result = {"status": status, "ingestion_batch_id": 4, "rows_new": 3}
 
-    def call(path):
+    def call(path, **kwargs):
+        assert kwargs == {"source_policy": "elia-full"}
         assert Path(path).parent == root / "data/processing"
         assert Path(path).read_bytes() == b"csv content"
         assert not source.exists()
@@ -199,7 +201,7 @@ def test_simultaneous_runs_only_process_source_once(local, monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def process(path):
+    def process(path, **kwargs):
         started.set()
         assert release.wait(timeout=5)
         return {"status": "SUCCESS"}
@@ -252,6 +254,10 @@ def test_cli_transport_and_business_result(local, status, code, capsys):
         "-B",
         str(root / "src/local_pipeline.py"),
         str(source),
+        "--source-policy",
+        "restricted",
+        "--input-scope",
+        "continuous",
     ]
     assert kwargs["cwd"] == root
     assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
@@ -288,7 +294,42 @@ def test_manual_flow_accepts_csv_independently(local, monkeypatch):
     call = Mock(return_value={"status": "SUCCESS"})
     monkeypatch.setattr(pipeline, "run_local_pipeline", call)
     assert pipeline.energy_pipeline.fn("data/raw/manual.csv")["status"] == "SUCCESS"
-    call.assert_called_once_with("data/raw/manual.csv")
+    call.assert_called_once_with(
+        "data/raw/manual.csv", source_policy="restricted", input_scope="continuous"
+    )
+
+
+def test_manual_prefect_uses_same_full_export_cli_policy(local):
+    root, run = local
+    source = ready(root)
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=0, stdout='{"status":"SUCCESS","rows_changed":2}', stderr=""
+    )
+    result = pipeline.run_local_pipeline.fn(str(source), source_policy="elia-full")
+    assert result["rows_changed"] == 2
+    assert run.call_args.args[0][4:] == [
+        "--source-policy",
+        "elia-full",
+        "--input-scope",
+        "continuous",
+    ]
+
+
+def test_inbox_never_routes_full_export_to_pending_approval(local, monkeypatch):
+    root, _ = local
+    previous = root / "data/pending_approval/previous.csv"
+    previous.parent.mkdir()
+    previous.write_text("keep historical file", encoding="utf-8")
+    ready(root)
+    monkeypatch.setattr(
+        inbox, "energy_pipeline", Mock(return_value={"status": "AWAITING_APPROVAL"})
+    )
+    with pytest.raises(pipeline.PipelineExecutionError):
+        inbox.energy_inbox.fn()
+    assert (root / "data/failed/export.csv").exists()
+    assert previous.read_text("utf-8") == "keep historical file"
+    assert len(list(previous.parent.iterdir())) == 1
 
 
 def test_no_business_retries():
@@ -317,6 +358,8 @@ def test_deployment_config_with_installed_prefect_391(monkeypatch):
     manual, auto = config["deployments"]
     assert manual["schedules"] == []
     assert manual["name"] == "elia-manual"
+    assert manual["parameters"]["source_policy"] == "elia-full"
+    assert manual["parameters"]["input_scope"] == "continuous"
     assert auto["name"] == "elia-inbox"
     limits = ConcurrencyLimitConfig(**auto["concurrency_limit"])
     assert limits.limit == 1

@@ -20,7 +20,9 @@ class PipelineExecutionError(RuntimeError):
 
 
 @task(name="run-local-pipeline", log_prints=True, retries=0, persist_result=False)
-def run_local_pipeline(csv_path: str) -> dict:
+def run_local_pipeline(
+    csv_path: str, source_policy: str = "restricted", input_scope: str = "continuous"
+) -> dict:
     python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
     script = PROJECT_ROOT / "src" / "local_pipeline.py"
 
@@ -34,7 +36,16 @@ def run_local_pipeline(csv_path: str) -> dict:
     # Fix the child encoding too: Windows' default code page is not always UTF-8.
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     process = subprocess.run(
-        [str(python), "-B", str(script), str(path)],
+        [
+            str(python),
+            "-B",
+            str(script),
+            str(path),
+            "--source-policy",
+            source_policy,
+            "--input-scope",
+            input_scope,
+        ],
         cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
@@ -91,8 +102,14 @@ def run_local_pipeline(csv_path: str) -> dict:
 
 
 @flow(name="belgian-energy-pipeline", log_prints=True, retries=0, persist_result=False)
-def energy_pipeline(csv_path: str = "data/raw/ods001.csv") -> dict:
-    return run_local_pipeline(csv_path)
+def energy_pipeline(
+    csv_path: str = "data/raw/ods001.csv",
+    source_policy: str = "restricted",
+    input_scope: str = "continuous",
+) -> dict:
+    return run_local_pipeline(
+        csv_path, source_policy=source_policy, input_scope=input_scope
+    )
 
 
 if __name__ == "__main__":

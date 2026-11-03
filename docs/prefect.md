@@ -20,6 +20,14 @@ déjà être configurés selon les guides [d'exploitation](operations.md) et
 | `elia-manual` | `belgian-energy-pipeline` | Manuel, paramètre `csv_path`, sans horaire |
 | `elia-inbox` | `energy-inbox` | Manuel ou Cron toutes les 5 minutes, `Europe/Brussels`, initialement **inactif** |
 
+Les deux deployments utilisent la politique métier `elia-full` : les mises à
+jour ordinaires de la source Elia, y compris `CHANGED`, sont acceptées et
+historisées automatiquement, après les contrôles techniques habituels. La
+[politique commune](authorized_corrections.md) est exécutée par le script métier,
+pas réimplémentée dans Prefect. Le défaut des CLI et des fonctions Python
+génériques reste `restricted` ; le deployment manuel déclare `elia-full` dans
+ses paramètres et le parent inbox le transmet explicitement au sous-flow.
+
 Un seul pool et un seul worker suffisent. Le parent traite **un seul CSV par
 exécution**, dans l'ordre des noms (sans distinction de casse, puis nom exact).
 Les autres fichiers attendent le passage suivant.
@@ -125,6 +133,11 @@ les parseurs et modèles de Prefect **3.9.1 installé**, sans appel serveur.
 La [documentation des schedules](https://docs.prefect.io/v3/concepts/schedules)
 décrit `cron`, `timezone` et `active`.
 
+Après changement de politique, réenregistrer les deployments pour mettre à jour
+les paramètres de `elia-manual` ; aucun enregistrement ni lancement réel n'est
+effectué par les tests. Le YAML remet le Cron à l'état inactif lors de son
+enregistrement : ne le réactiver que volontairement.
+
 Dans **Deployments**, choisir un deployment puis **Run** ou **Quick run** :
 
 1. `elia-inbox` : une inbox vide vérifie `Completed` / `EMPTY` sans ingestion.
@@ -132,13 +145,23 @@ Dans **Deployments**, choisir un deployment puis **Run** ou **Quick run** :
 2. `elia-manual` : renseigner `csv_path`, par exemple `data/raw/mon_export.csv`
    ou un chemin absolu. Le défaut reste `data/raw/ods001.csv`. Lancer seulement
    après validation de l'ingestion. Ce flow fonctionne indépendamment d'inbox
-   et **ne déplace pas le CSV**.
+   et **ne déplace pas le CSV**. Les paramètres du deployment sont
+   `source_policy=elia-full`, `input_scope=continuous`. Pour un import partiel
+   exceptionnel, sélectionner `source_policy=restricted` et `input_scope=partial`.
 
 Ne pas fournir au flow manuel un fichier déjà pris en charge par le parent.
 Le verrou d'inbox ne couvre pas les appels directs au script métier ; les
 protections PostgreSQL existantes restent en place.
 
 ## Déposer un CSV complet
+
+L'opérateur doit déposer le **dernier export complet ODS001 provenant d'Elia**.
+Le dossier n'authentifie pas les fichiers et ne prouve pas leur fraîcheur.
+Ne pas y déposer d'extraits partiels ou de CSV d'une source non fiable.
+La date de modification contrôlée ci-dessous concerne seulement la fin de copie,
+pas la date d'extraction Elia. Le pipeline n'invente jamais `extracted_at` ; sans
+date réelle fournie, elle reste inconnue. Un ancien export jamais ingéré peut
+donc remplacer des valeurs plus récentes s'il est déclaré fiable à tort.
 
 Copier sous une extension temporaire dans inbox, fermer la copie, puis renommer
 en `.csv`. Exemple avec un nom final unique :
@@ -171,16 +194,23 @@ Les logs du sous-processus remontent à Prefect **après sa fin**, pas en direct
 | --- | --- | --- |
 | `SUCCESS` | `data/archive/` | `Completed` |
 | `NO_CHANGE` | `data/archive/` | `Completed` |
-| `AWAITING_APPROVAL` | `data/pending_approval/` | `Completed`, revue manuelle requise |
 | `DBT_FAILED` | `data/failed/` | `Failed` pour la task, le sous-flow et le parent |
 | Erreur technique, validation ou qualité | `data/failed/` | `Failed` |
 
-Un code CLI 1 avec un JSON valide `AWAITING_APPROVAL` n'est pas une erreur
-technique. Aucune autorisation n'est transmise et aucune correction historique
-n'est appliquée automatiquement. `DBT_FAILED` conserve l'ingestion déjà validée,
-avec son batch et ses éventuelles corrections autorisées. Une sortie absente,
+`elia-full` réutilise le mécanisme de correction historisée avec le hash calculé
+sous verrou et le motif `Automatic update from authoritative Elia ODS001 full export`.
+Ce motif identifie une décision automatique, jamais une revue humaine. Les
+contrôles de fraîcheur fondés sur une date d'extraction réellement connue restent
+actifs. `DBT_FAILED` conserve l'ingestion déjà validée,
+avec son batch et ses corrections historisées. Une sortie absente,
 mal formée ou incompatible avec son code devient une erreur technique. Une
 erreur de lancement avant création du sous-processus n'a pas de code de sortie.
+
+Les corrections d'un export complet fiable ne produisent plus
+`AWAITING_APPROVAL`. Si ce résultat inattendu arrive dans inbox, le parent échoue
+et classe le CSV dans `failed/` pour diagnostic. La task sait encore lire ce
+statut pour un lancement manuel **restrictif** : code CLI 1 et état Prefect
+`Completed`, sans correction appliquée. Le flow manuel ne classe aucun fichier.
 
 Prefect décrit l'exécution ; le statut métier décrit le résultat fonctionnel.
 Lire les deux. `EMPTY` et `BUSY` concernent le parent sans appel métier. Les
@@ -196,6 +226,8 @@ dans son dossier final et le flow échoue.
 Flows et task ont `retries=0` : aucune reprise automatique de l'ingestion ou de
 dbt. Les passages suivants cherchent uniquement dans inbox ; ils ne reprennent
 pas les fichiers de `failed/`, `pending_approval/` ou `processing/`.
+`pending_approval/` n'est plus alimenté par inbox ; ses fichiers antérieurs
+restent conservés et ne sont ni déplacés ni effacés par cette évolution.
 
 ## Activer, désactiver et vérifier le Cron
 
@@ -231,7 +263,13 @@ Get-Content -LiteralPath 'data/failed/mon_export.csv.result.json' -Encoding UTF8
 
 ## Revue manuelle et reprise après échec ou interruption
 
-Pour un CSV en attente, suivre le [guide des corrections](authorized_corrections.md).
+Les nouveaux exports complets de confiance ne nécessitent pas cette revue.
+Pour un **ancien** CSV dans `pending_approval/`, déterminer d'abord sa provenance
+et s'il représente encore le dernier export complet Elia. Ne pas remettre un
+ancien export en inbox au seul motif qu'il attendait une approbation.
+
+Pour un import partiel ou non fiable conservant la politique restrictive,
+suivre le [guide des corrections](authorized_corrections.md).
 Prévisualiser en lecture seule, examiner le rapport complet et vérifier le hash :
 
 ```powershell
@@ -261,8 +299,9 @@ Après une erreur ou une interruption :
 2. Lire les logs, diagnostics et états des batchs/builds. Une interruption brutale
    peut laisser un build `RUNNING` et un CSV dans processing ; ne pas déduire de
    l'état Prefect qu'aucune écriture n'a eu lieu.
-3. Corriger la cause puis remettre volontairement **un seul** fichier dans inbox,
-   avec un nom unique. Ne pas recopier le même contenu en parallèle.
+3. Corriger la cause puis remettre volontairement **un seul export complet Elia
+   approprié** dans inbox, avec un nom unique. Ne pas recopier le même contenu
+   en parallèle. Garder les imports partiels dans le parcours manuel restrictif.
 4. Déclencher `elia-inbox`. Le pipeline revérifie contenu et base. Après
    `DBT_FAILED`, le même fichier peut retenter dbt sans annuler ni réappliquer
    l'ingestion validée. Les protections métier restent actives.
@@ -327,7 +366,7 @@ Relancer serveur et worker puis vérifier une inbox vide.
 
 Les tests utilisent des dossiers temporaires et simulent le sous-processus
 métier, sans contacter PostgreSQL ni l'API du serveur en fonctionnement.
-Les tests unitaires ne démarrent aucun serveur. Les cinq tests du moteur
+Les tests unitaires ne démarrent aucun serveur. Les tests du moteur
 Prefect démarrent puis arrêtent un serveur **temporaire** sur un port libre,
 avec sa propre base SQLite ; ils vérifient les états réels des flows :
 

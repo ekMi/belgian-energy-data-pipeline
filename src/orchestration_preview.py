@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from correction_policy import SOURCE_POLICIES, automatic_corrections
 from merge_ods001 import preview_csv
 from operations import run_cli
 from orchestration_decision import decide_action
@@ -25,9 +26,15 @@ class PipelinePlan:
     dbt_required: bool = False
 
 
-def plan_csv(csv_path: Path) -> PipelinePlan:
+def plan_csv(
+    csv_path: Path,
+    *,
+    source_policy: str = "restricted",
+    input_scope: str = "continuous",
+) -> PipelinePlan:
     """Determine the next action without running ingestion or dbt."""
 
+    automatic_corrections(source_policy, input_scope)
     # 1. Calculate the file checksum
     checksum = calculate_sha256(csv_path)
 
@@ -41,6 +48,8 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
         action = decide_action(
             already_ingested=True,
             rows_changed=None,
+            source_policy=source_policy,
+            input_scope=input_scope,
         )
 
         return PipelinePlan(
@@ -63,6 +72,8 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
     action = decide_action(
         already_ingested=False,
         rows_changed=preview.rows_changed,
+        source_policy=source_policy,
+        input_scope=input_scope,
     )
 
     return PipelinePlan(
@@ -78,15 +89,23 @@ def plan_csv(csv_path: Path) -> PipelinePlan:
 def main() -> None:
     """Run the read-only pipeline planner from the CLI."""
     parser = argparse.ArgumentParser(
-        description="Previex the next pipeline action without executing it"
+        description="Preview the next pipeline action without executing it"
     )
 
-    parser.add_argument("csv_path", type=Path, help="Path to rhe Elia ODS001 CSV file")
+    parser.add_argument("csv_path", type=Path, help="Path to the Elia ODS001 CSV file")
+    parser.add_argument(
+        "--source-policy", choices=SOURCE_POLICIES, default="restricted"
+    )
+    parser.add_argument(
+        "--input-scope", choices=("continuous", "partial"), default="continuous"
+    )
 
     args = parser.parse_args()
 
     # Call plan_csv
-    plan = plan_csv(args.csv_path)
+    plan = plan_csv(
+        args.csv_path, source_policy=args.source_policy, input_scope=args.input_scope
+    )
 
     # Convert dataclass to dict
     plan = asdict(plan)

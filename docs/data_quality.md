@@ -33,7 +33,7 @@ Les timestamps d'entrée comportent un décalage explicite et sont normalisés e
 
 ## Rapports et historique
 
-`staging.quality_run` conserve le batch, la date d'analyse, `as_of`, le périmètre et les paramètres ; `staging.quality_result` conserve les règles et leurs résultats. Les rapports sont ajoutés, jamais écrasés. `staging.elia_load_correction` conserve les huit anciennes et nouvelles mesures et les batchs de provenance pour chaque correction autorisée. Les valeurs inchangées gardent leur producteur précédent.
+`staging.quality_run` conserve le batch, la date d'analyse, `as_of`, le périmètre et les paramètres ; `staging.quality_result` conserve les règles et leurs résultats. Les rapports sont ajoutés, jamais écrasés. `staging.elia_load_correction` conserve les huit anciennes et nouvelles mesures et les batchs de provenance pour chaque correction : automatique en mode `elia-full` pour les exports complets Elia de confiance, ou autorisée manuellement à titre exceptionnel en mode restrictif. Les valeurs inchangées gardent leur producteur précédent. La politique automatique ne contourne aucun contrôle bloquant de ce guide.
 
 Après correction, `ingestion_batch_id` désigne le producteur de la **version courante** ; filtrer la table d'observations par un ancien batch ne reconstitue donc pas son export initial. Utiliser les rapports sauvegardés et le CSV original immuable identifié par SHA-256. Le mode `historical` du diagnostic lit les rapports existants ; le mode `current` réévalue seulement les versions courantes encore attribuées au batch. Voir [exploitation](operations.md) et [corrections](authorized_corrections.md).
 

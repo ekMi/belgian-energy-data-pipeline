@@ -101,6 +101,14 @@ reservation. Ingestion classifies the file again under its advisory lock before
 applying changes. Preview neither grants correction authorization nor holds
 the ingestion lock.
 
+The separate orchestration planner accepts the shared source policy:
+`python src/orchestration_preview.py data/raw/full_export.csv --source-policy elia-full`
+plans INGEST even with CHANGED observations. Without this explicit declaration,
+the default restricted policy plans AWAITING_APPROVAL for changes. Partial inputs
+must remain restricted. Planning never ingests data or creates correction history;
+the ingestion rechecks its policy, hash, quality and actual classification under
+the existing lock. See [correction policy](authorized_corrections.md).
+
 Input headers are checked again while copying; empty input is rejected. SHA-256
 is checked before and after reading. Keep exports immutable while previewing:
 the check detects ordinary file replacement but is not a filesystem snapshot.

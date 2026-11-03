@@ -13,6 +13,8 @@ deployments:
     entrypoint: src/prefect/pipeline.py:energy_pipeline
     parameters:
       csv_path: data/raw/ods001.csv
+      source_policy: elia-full
+      input_scope: continuous
     schedules: []
     work_pool:
       name: energy-local

@@ -1,4 +1,4 @@
-"""ODS001 ingestion with explicit file-bound, historized corrections."""
+"""ODS001 ingestion with source-dependent, file-bound historized corrections."""
 
 import argparse
 import logging
@@ -19,6 +19,11 @@ from config import (
     verify_database_target,
 )
 from consolidated_quality import check_consolidated
+from correction_policy import (
+    AUTOMATIC_CORRECTION_REASON,
+    SOURCE_POLICIES,
+    automatic_corrections,
+)
 from merge_ods001 import (
     archive_corrections,
     classify_incoming,
@@ -49,8 +54,17 @@ class ChangedObservationsError(ValueError):
     """Changed observations require explicit file-bound authorization."""
 
 
-
-def validate_authorization(authorized_sha256, correction_reason, extracted_at):
+def validate_authorization(
+    authorized_sha256,
+    correction_reason,
+    extracted_at,
+    *,
+    source_policy="restricted",
+    input_scope="continuous",
+):
+    automatic = automatic_corrections(source_policy, input_scope)
+    if automatic and (authorized_sha256 is not None or correction_reason is not None):
+        raise ValueError("elia-full cannot be combined with manual authorization")
     if authorized_sha256 is None:
         if correction_reason is not None:
             raise ValueError("correction_reason requires authorized_sha256")
@@ -64,22 +78,33 @@ def validate_authorization(authorized_sha256, correction_reason, extracted_at):
         )
     if extracted_at is not None and extracted_at.utcoffset() is None:
         raise ValueError("extracted_at requires an explicit UTC offset")
+    return automatic
 
 
 def ingest_csv(
     path: Path,
     *,
     input_scope: str = "continuous",
+    source_policy: str = "restricted",
     authorized_sha256: str | None = None,
     correction_reason: str | None = None,
     extracted_at: datetime | None = None,
     source_reference: str | None = None,
 ) -> IngestionResult | None:
-    if input_scope not in ("continuous", "partial"):
-        raise ValueError("input_scope must be continuous or partial")
-    validate_authorization(authorized_sha256, correction_reason, extracted_at)
+    automatic = validate_authorization(
+        authorized_sha256,
+        correction_reason,
+        extracted_at,
+        source_policy=source_policy,
+        input_scope=input_scope,
+    )
     started = time.monotonic()
-    logger.info("ingestion_started file=%r scope=%s", path.name, input_scope)
+    logger.info(
+        "ingestion_started file=%r scope=%s source_policy=%s",
+        path.name,
+        input_scope,
+        source_policy,
+    )
     params = get_connection_params()
     if params["dbname"] != INGESTION_DATABASE:
         raise RuntimeError(
@@ -88,6 +113,10 @@ def ingest_csv(
     with psycopg.connect(**params) as conn, ingestion_lock(conn):
         verify_database_target(conn, params["dbname"], INGESTION_DATABASE)
         checksum = calculate_sha256(path)
+        if automatic:
+            # Reuse schema 04's hash-bound permission, without claiming human review.
+            authorized_sha256 = checksum
+            correction_reason = AUTOMATIC_CORRECTION_REASON
         if authorized_sha256 is not None and authorized_sha256 != checksum:
             raise ValueError("Authorization SHA-256 does not match the input file")
         existing = conn.execute(
@@ -323,6 +352,9 @@ def main() -> None:
     parser.add_argument(
         "--input-scope", choices=("continuous", "partial"), default="continuous"
     )
+    parser.add_argument(
+        "--source-policy", choices=SOURCE_POLICIES, default="restricted"
+    )
     parser.add_argument("--authorize-sha256")
     parser.add_argument("--correction-reason")
     parser.add_argument("--extracted-at", type=datetime.fromisoformat)
@@ -331,6 +363,7 @@ def main() -> None:
     result = ingest_csv(
         args.csv_path,
         input_scope=args.input_scope,
+        source_policy=args.source_policy,
         authorized_sha256=args.authorize_sha256,
         correction_reason=args.correction_reason,
         extracted_at=args.extracted_at,

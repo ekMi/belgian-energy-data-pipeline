@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from correction_policy import SOURCE_POLICIES
 from dbt_guard import locked_build
 from dbt_run_store import mark_failed, mark_success, start_build
 from ingest_ods001 import (
@@ -36,22 +37,33 @@ def run_pipeline(
     csv_path: Path,
     *,
     input_scope: str = "continuous",
+    source_policy: str = "restricted",
     authorized_sha256: str | None = None,
     correction_reason: str | None = None,
     extracted_at: datetime | None = None,
     source_reference: str | None = None,
 ) -> PipelineResult:
-    """Ingest with explicit file-bound authorization, then recheck dbt under its lock.
+    """Apply the declared source policy, then recheck dbt under its lock.
 
     Ingestion owns and releases its own lock before locked_build is entered.
     Its transactional classification is authoritative if the preview became stale.
     A committed ingestion is never rolled back by a subsequent build failure.
     """
-    validate_authorization(authorized_sha256, correction_reason, extracted_at)
-    plan = plan_csv(csv_path)
+    automatic = validate_authorization(
+        authorized_sha256,
+        correction_reason,
+        extracted_at,
+        source_policy=source_policy,
+        input_scope=input_scope,
+    )
+    plan = plan_csv(csv_path, source_policy=source_policy, input_scope=input_scope)
     if authorized_sha256 is not None and authorized_sha256 != plan.file_sha256:
         raise ValueError("Authorization SHA-256 does not match the input file")
-    if plan.action == "AWAITING_APPROVAL" and authorized_sha256 is None:
+    if (
+        plan.action == "AWAITING_APPROVAL"
+        and not automatic
+        and authorized_sha256 is None
+    ):
         return PipelineResult(
             "AWAITING_APPROVAL", rows_new=plan.rows_new, rows_changed=plan.rows_changed
         )
@@ -61,12 +73,15 @@ def run_pipeline(
         ingestion = ingest_csv(
             csv_path,
             input_scope=input_scope,
+            source_policy=source_policy,
             authorized_sha256=authorized_sha256,
             correction_reason=correction_reason,
             extracted_at=extracted_at,
             source_reference=source_reference,
         )
     except ChangedObservationsError:
+        if automatic:
+            raise
         return PipelineResult("AWAITING_APPROVAL")
     batch_id = ingestion.batch_id if ingestion else plan.successful_batch_id
     counts = {
@@ -122,6 +137,9 @@ def main() -> None:
     parser.add_argument(
         "--input-scope", choices=("continuous", "partial"), default="continuous"
     )
+    parser.add_argument(
+        "--source-policy", choices=SOURCE_POLICIES, default="restricted"
+    )
     parser.add_argument("--authorize-sha256")
     parser.add_argument("--correction-reason")
     parser.add_argument("--extracted-at", type=datetime.fromisoformat)
@@ -130,6 +148,7 @@ def main() -> None:
     result = run_pipeline(
         args.csv_path,
         input_scope=args.input_scope,
+        source_policy=args.source_policy,
         authorized_sha256=args.authorize_sha256,
         correction_reason=args.correction_reason,
         extracted_at=args.extracted_at,

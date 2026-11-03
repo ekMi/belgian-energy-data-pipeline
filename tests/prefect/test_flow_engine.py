@@ -27,7 +27,6 @@ def isolated_prefect():
     [
         ("SUCCESS", "archive", True),
         ("NO_CHANGE", "archive", True),
-        ("AWAITING_APPROVAL", "pending_approval", True),
         ("DBT_FAILED", "failed", False),
         ("TECHNICAL_ERROR", "failed", False),
     ],
@@ -52,6 +51,12 @@ def test_parent_child_and_task_states(
         calls.append(args)
         assert Path(args[3]).parent == tmp_path / "data/processing"
         assert Path(args[3]).exists()
+        assert args[4:] == [
+            "--source-policy",
+            "elia-full",
+            "--input-scope",
+            "continuous",
+        ]
         return SimpleNamespace(
             returncode=0 if status in {"SUCCESS", "NO_CHANGE"} else 1,
             stdout=json.dumps(
@@ -60,7 +65,7 @@ def test_parent_child_and_task_states(
                     "ingestion_batch_id": 4,
                     "build_id": 7,
                     "rows_new": 3,
-                    "rows_changed": 0,
+                    "rows_changed": 2,
                 }
             )
             if status != "TECHNICAL_ERROR"
@@ -98,4 +103,46 @@ def test_parent_child_and_task_states(
     assert report["stderr"] == "mock CLI log"
     if status != "TECHNICAL_ERROR":
         assert report["ingestion_batch_id"] == 4
+        assert report["rows_changed"] == 2
+    assert not (tmp_path / "data/pending_approval").exists()
     assert not list((tmp_path / "data/processing").glob("*.csv"))
+
+
+@pytest.mark.parametrize(
+    "source_policy,status",
+    [("elia-full", "SUCCESS"), ("restricted", "AWAITING_APPROVAL")],
+)
+def test_manual_flow_retains_both_source_policies(
+    isolated_prefect, monkeypatch, tmp_path, source_policy, status
+):
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    source = tmp_path / "manual.csv"
+    source.write_text("mocked CSV", encoding="utf-8")
+    real_run = pipeline.subprocess.run
+    calls = []
+
+    def run(args, **kwargs):
+        if len(args) < 3 or args[2] != str(tmp_path / "src/local_pipeline.py"):
+            return real_run(args, **kwargs)
+        calls.append(args)
+        return SimpleNamespace(
+            returncode=0 if status == "SUCCESS" else 1,
+            stdout=json.dumps({"status": status, "rows_changed": 2}),
+            stderr="mock log",
+        )
+
+    monkeypatch.setattr(pipeline.subprocess, "run", run)
+    state = pipeline.energy_pipeline(
+        str(source), source_policy=source_policy, return_state=True
+    )
+    assert state.is_completed()
+    assert state.result()["status"] == status
+    assert state.result()["rows_changed"] == 2
+    assert calls[0][4:] == [
+        "--source-policy",
+        source_policy,
+        "--input-scope",
+        "continuous",
+    ]
+    assert len(calls) == 1
+    assert source.read_text("utf-8") == "mocked CSV"
