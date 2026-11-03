@@ -1,0 +1,30 @@
+
+name: belgian-energy-data-pipeline
+prefect-version: 3.9.1
+
+build: []
+push: []
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: "{{ $ENERGY_PROJECT_ROOT }}"
+
+deployments:
+  - name: elia-manual
+    entrypoint: src/prefect/pipeline.py:energy_pipeline
+    parameters:
+      csv_path: data/raw/ods001.csv
+    schedules: []
+    work_pool:
+      name: energy-local
+
+  - name: elia-inbox
+    entrypoint: src/prefect/inbox.py:energy_inbox
+    concurrency_limit:
+      limit: 1
+      collision_strategy: CANCEL_NEW
+    schedules:
+      - cron: "*/5 * * * *"
+        timezone: Europe/Brussels
+        active: false
+    work_pool:
+      name: energy-local

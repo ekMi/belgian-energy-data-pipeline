@@ -9,6 +9,7 @@ Pipeline local et reproductible pour analyser la consommation électrique belge 
 - Ingestion transactionnelle et incrémentale : insertion des nouveautés, conservation des lignes identiques et correction historique uniquement avec un hash et un motif explicites. Les anciennes valeurs sont historisées.
 - Contrôles qualité sur le fichier reçu et sur les valeurs consolidées concernées. Les erreurs bloquent l'ingestion ; les avertissements sont conservés avec leur périmètre et leur date de référence.
 - Modèles dbt `dim_date`, `dim_time` et `fact_load_15m` dans `analytics`, puis visualisation Power BI.
+- Orchestration locale Prefect 3.9.1 : lancement manuel ou surveillance de `data/inbox/`, un CSV par passage, puis classement pour archive, revue ou diagnostic. Le Cron toutes les cinq minutes est livré désactivé ; serveur et worker doivent rester actifs. Voir le [guide Prefect](docs/prefect.md).
 
 ```mermaid
 flowchart LR
@@ -68,6 +69,7 @@ L'API Python `ingest_csv()` renvoie `IngestionResult` après une ingestion réus
 | Sujet | Guide |
 | --- | --- |
 | Installation, commandes et suivi des batchs | [Exploitation](docs/operations.md) |
+| Serveur, worker, deployments et cycle de vie des CSV | [Prefect](docs/prefect.md) |
 | Règles, périmètres et constats de qualité | [Qualité des données](docs/data_quality.md) |
 | Prévisualisation et rapport complet | [Prévisualisation](docs/incremental_preview.md) |
 | Autorisation et historisation des corrections | [Corrections](docs/authorized_corrections.md) |
@@ -79,16 +81,16 @@ L'API Python `ingest_csv()` renvoie `IngestionResult` après une ingestion réus
 
 Une ingestion réelle du **26 octobre 2026** a traité 415 104 observations : 768 insérées, 413 276 inchangées et 1 060 corrigées avec historique (`batch_id=2`, `SUCCESS`). La reconstruction des trois modèles dbt et leurs 46 tests a réussi ; Power BI a été actualisé manuellement. Ces chiffres sont un résultat daté, pas une valeur attendue par chaque exécution. Le rapport de cette ingestion compte 1 854 occurrences `WARNING` sur deux périmètres ; voir [qualité des données](docs/data_quality.md) pour éviter le double comptage.
 
-L'acquisition des exports, le déclenchement du pipeline et l'actualisation Power BI restent manuels. Il n'y a ni ordonnanceur, ni cloud, ni SLA de fraîcheur Elia validé. Les statistiques de qualité sur de grands fichiers peuvent consommer beaucoup de mémoire. L'historique des corrections conserve les anciennes valeurs, mais l'appartenance complète de chaque ligne à tous ses exports antérieurs n'est pas reconstruite depuis la seule table courante. Les prochaines évolutions envisageables sont l'acquisition automatisée, la surveillance de fraîcheur après validation d'un seuil, l'orchestration et l'évaluation de volumes plus importants.
+L'acquisition des exports et l'actualisation Power BI restent manuelles. Prefect permet de planifier le traitement local des CSV déposés ; son Cron est initialement désactivé. Il n'y a ni cloud ni SLA de fraîcheur Elia validé. Les statistiques de qualité sur de grands fichiers peuvent consommer beaucoup de mémoire. L'historique des corrections conserve les anciennes valeurs, mais l'appartenance complète de chaque ligne à tous ses exports antérieurs n'est pas reconstruite depuis la seule table courante. Les prochaines évolutions envisageables sont l'acquisition automatisée, la surveillance de fraîcheur après validation d'un seuil et l'évaluation de volumes plus importants.
 
-### Verrou partag� ingestion / dbt
+### Verrou partagé ingestion / dbt
 
 `pipeline_lock.pipeline_lock(conn)` centralise le verrou PostgreSQL exclusif de
 session `(81001, 1)`. L'ingestion conserve son interface `ingestion_lock`.
-Le d�lai `PIPELINE_LOCK_TIMEOUT` (10 secondes par d�faut) est appliqu� localement
-� la transaction d'acquisition ; les commits et rollbacks ult�rieurs ne lib�rent
+Le délai `PIPELINE_LOCK_TIMEOUT` (10 secondes par défaut) est appliqué localement
+à la transaction d'acquisition ; les commits et rollbacks ultérieurs ne libèrent
 pas le verrou de session. Le contexte annule toute transaction encore ouverte
-avant de lib�rer le verrou : valider explicitement les �critures � conserver.
+avant de libérer le verrou : valider explicitement les écritures à conserver.
 
 Le prochain orchestrateur pourra utiliser :
 
@@ -97,30 +99,30 @@ from dbt_guard import locked_build
 import dbt_run_store
 
 with locked_build() as session:
-    # D�terminer le batch cible via session.connection, puis terminer la
-    # transaction de lecture avant les �critures du store sur sa connexion.
+    # Déterminer le batch cible via session.connection, puis terminer la
+    # transaction de lecture avant les écritures du store sur sa connexion.
     target_batch_id = ...
     session.connection.commit()
     attempt = dbt_run_store.start_build(target_batch_id)
-    session.build()  # attend la fin du sous-processus sous le m�me verrou
+    session.build()  # attend la fin du sous-processus sous le même verrou
     dbt_run_store.mark_success(attempt.build_id)
 ```
 
-Cet exemple illustre le p�rim�tre de protection, pas la gestion compl�te des
-�checs : enregistrer �galement FAILED dans ce contexte si le lancement �choue.
-Les m�thodes actuelles du store ouvrent et valident leurs propres transactions,
-sans acqu�rir de verrou pipeline. Elles restent donc prot�g�es par la session
+Cet exemple illustre le périmètre de protection, pas la gestion complète des
+échecs : enregistrer également FAILED dans ce contexte si le lancement échoue.
+Les méthodes actuelles du store ouvrent et valident leurs propres transactions,
+sans acquérir de verrou pipeline. Elles restent donc protégées par la session
 parente. Ne pas rappeler `guarded_build()` ou `locked_build()` dans ce contexte :
-utiliser `session.build()` pour �viter d'attendre son propre verrou sur une autre
-connexion. Ne pas garder de verrous de lignes non valid�s sur `session.connection`
-pendant un appel au store. La connexion expos�e permet aussi d'int�grer plus tard
-les op�rations de suivi directement sur cette connexion, sans nouvelle acquisition.
+utiliser `session.build()` pour éviter d'attendre son propre verrou sur une autre
+connexion. Ne pas garder de verrous de lignes non validés sur `session.connection`
+pendant un appel au store. La connexion exposée permet aussi d'intégrer plus tard
+les opérations de suivi directement sur cette connexion, sans nouvelle acquisition.
 
-Le verrou est coop�ratif : un dbt lanc� directement le contourne. Si le parent
-est tu� brutalement ou perd sa connexion PostgreSQL alors que dbt continue,
-PostgreSQL lib�re le verrou sans garantir l'arr�t du sous-processus ; une autre
-ex�cution peut alors commencer. Cette limite n�cessite une supervision des
-processus si une garantie au-del� de la dur�e de vie du parent devient n�cessaire.
+Le verrou est coopératif : un dbt lancé directement le contourne. Si le parent
+est tué brutalement ou perd sa connexion PostgreSQL alors que dbt continue,
+PostgreSQL libère le verrou sans garantir l'arrêt du sous-processus ; une autre
+exécution peut alors commencer. Cette limite nécessite une supervision des
+processus si une garantie au-delà de la durée de vie du parent devient nécessaire.
 
 Les tests `tests/integration/test_pipeline_lock.py` simulent dbt et exigent les
 cinq variables `TEST_PGHOST`, `TEST_PGPORT`, `TEST_PGDATABASE`, `TEST_PGUSER`,
@@ -195,5 +197,6 @@ ni fournir de nouvelle autorisation. Après succès, un nouveau lancement retour
 du verrou intervient avant la création d'une tentative. Un arrêt brutal peut
 laisser une tentative `RUNNING` ; elle ne compte jamais comme un succès et le
 prochain appel peut reconstruire. Si dbt réussit mais que l'enregistrement final
-échoue, le prochain appel peut reconstruire à nouveau. Aucun ordonnanceur,
-surveillance de dossier ou relancement automatique n'est inclus.
+échoue, le prochain appel peut reconstruire à nouveau. La couche
+[Prefect](docs/prefect.md) ajoute la planification et la surveillance de dossier.
+Les opérations métier restent sans retries automatiques.

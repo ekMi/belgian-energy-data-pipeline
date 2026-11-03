@@ -1,12 +1,19 @@
 # Python
 .venv/
 .venv-dbt/
+.venv-prefect/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
 
 # Local data and databases
+data/inbox/*
+data/processing/*
+data/archive/*
+data/pending_approval/*
+data/failed/*
+.prefect/
 data/raw/*
 data/processed/*
 *.db
@@ -14,6 +21,11 @@ data/processed/*
 *.sqlite3
 
 # Keep directory structure
+!data/inbox/.gitkeep
+!data/processing/.gitkeep
+!data/archive/.gitkeep
+!data/pending_approval/.gitkeep
+!data/failed/.gitkeep
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
