@@ -8,9 +8,14 @@ pipeline {
         skipDefaultCheckout(true)
     }
 
+    triggers {
+        pollSCM('H/5 * * * *')
+    }
+
     stages {
         stage('Checkout') {
             steps {
+                bat 'if exist reports\\pytest.xml del /q reports\\pytest.xml'
                 checkout scm
                 bat 'git rev-parse --short HEAD'
                 bat 'whoami'
@@ -45,8 +50,14 @@ pipeline {
     }
 
     post {
-        always {
-            junit allowEmptyResults: true, testResults: 'reports/pytest.xml'
+         always {
+            script {
+                if (fileExists('reports/pytest.xml')) {
+                    junit testResults: 'reports/pytest.xml'
+                } else {
+                    echo 'No pytest report generated in this build'
+                }
+            }
         }
     }
 }
