@@ -45,3 +45,6 @@ dbt/.user.yml
 .vscode/
 .DS_Store
 Thumbs.db
+
+# CI reports
+reports/
