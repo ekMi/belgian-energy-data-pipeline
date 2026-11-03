@@ -33,4 +33,3 @@ def pipeline_lock(conn):
             original_error.add_note(
                 "Explicit unlock failed; connection closure releases the lock."
             )
-

@@ -40,7 +40,10 @@ def test_no_overlap(guarded_dbt, monkeypatch, first_kind):
         if first_kind == "dbt":
             dbt_guard.guarded_build()
         else:
-            with psycopg.connect(**guarded_dbt) as conn, ingest_ods001.ingestion_lock(conn):
+            with (
+                psycopg.connect(**guarded_dbt) as conn,
+                ingest_ods001.ingestion_lock(conn),
+            ):
                 entered.set()
                 assert release.wait(5)
 
@@ -75,7 +78,9 @@ def test_release_after_context(guarded_dbt, fail):
     except ValueError:
         assert fail
     with psycopg.connect(**guarded_dbt) as conn:
-        assert conn.execute("SELECT pg_try_advisory_lock(%s, %s)", PIPELINE_LOCK).fetchone()[0]
+        assert conn.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", PIPELINE_LOCK
+        ).fetchone()[0]
 
 
 def test_contention_timeout_and_connection_close(guarded_dbt, monkeypatch):
