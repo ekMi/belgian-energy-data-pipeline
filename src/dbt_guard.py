@@ -5,6 +5,7 @@ import ipaddress
 import os
 import socket
 import subprocess
+import sys
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
@@ -152,6 +153,7 @@ class LockedDbtBuild:
                     TARGET_NAME,
                 ],
                 env=self.environment,
+                stdout=sys.stderr,
                 check=False,
             )
         except OSError as error:
