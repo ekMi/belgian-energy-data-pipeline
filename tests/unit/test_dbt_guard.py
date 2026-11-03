@@ -16,6 +16,9 @@ def configured(monkeypatch, tmp_path):
         "profile: belgian_energy_analytics\n", encoding="utf-8"
     )
     monkeypatch.setattr(dbt_guard, "DBT_DIR", dbt_dir)
+    fake_dbt_python = tmp_path / "python.exe"
+    fake_dbt_python.touch()
+    monkeypatch.setattr(dbt_guard, "DBT_PYTHON", fake_dbt_python)
     params = {
         "host": "localhost",
         "port": "5432",
