@@ -11,6 +11,7 @@ from pathlib import Path
 
 import psycopg
 
+from acquire_elia import AcquisitionResult, verify_acquisition
 from config import (
     CSV_PATH,
     INGESTION_DATABASE,
@@ -20,6 +21,7 @@ from config import (
 )
 from consolidated_quality import check_consolidated
 from correction_policy import (
+    API_CORRECTION_REASON,
     AUTOMATIC_CORRECTION_REASON,
     SOURCE_POLICIES,
     automatic_corrections,
@@ -61,10 +63,24 @@ def validate_authorization(
     *,
     source_policy="restricted",
     input_scope="continuous",
+    api_acquisition=None,
+    csv_path=None,
+    source_reference=None,
 ):
     automatic = automatic_corrections(source_policy, input_scope)
+    if source_policy == "elia-api":
+        verify_acquisition(api_acquisition, csv_path)
+        if (
+            extracted_at != api_acquisition.extracted_at
+            or source_reference != api_acquisition.source_reference
+        ):
+            raise ValueError("API acquisition metadata does not match its receipt")
+    elif api_acquisition is not None:
+        raise ValueError("API acquisition receipt requires source_policy=elia-api")
     if automatic and (authorized_sha256 is not None or correction_reason is not None):
-        raise ValueError("elia-full cannot be combined with manual authorization")
+        raise ValueError(
+            f"{source_policy} cannot be combined with manual authorization"
+        )
     if authorized_sha256 is None:
         if correction_reason is not None:
             raise ValueError("correction_reason requires authorized_sha256")
@@ -90,6 +106,7 @@ def ingest_csv(
     correction_reason: str | None = None,
     extracted_at: datetime | None = None,
     source_reference: str | None = None,
+    api_acquisition: AcquisitionResult | None = None,
 ) -> IngestionResult | None:
     automatic = validate_authorization(
         authorized_sha256,
@@ -97,6 +114,9 @@ def ingest_csv(
         extracted_at,
         source_policy=source_policy,
         input_scope=input_scope,
+        api_acquisition=api_acquisition,
+        csv_path=path,
+        source_reference=source_reference,
     )
     started = time.monotonic()
     logger.info(
@@ -113,10 +133,18 @@ def ingest_csv(
     with psycopg.connect(**params) as conn, ingestion_lock(conn):
         verify_database_target(conn, params["dbname"], INGESTION_DATABASE)
         checksum = calculate_sha256(path)
+        # Bind permission to the acquired bytes again under the ingestion lock.
+        # load_incoming() rechecks this same checksum after COPY.
+        if source_policy == "elia-api" and checksum != api_acquisition.sha256:
+            raise ValueError("API acquisition SHA-256 changed before ingestion")
         if automatic:
             # Reuse schema 04's hash-bound permission, without claiming human review.
             authorized_sha256 = checksum
-            correction_reason = AUTOMATIC_CORRECTION_REASON
+            correction_reason = (
+                API_CORRECTION_REASON
+                if source_policy == "elia-api"
+                else AUTOMATIC_CORRECTION_REASON
+            )
         if authorized_sha256 is not None and authorized_sha256 != checksum:
             raise ValueError("Authorization SHA-256 does not match the input file")
         existing = conn.execute(

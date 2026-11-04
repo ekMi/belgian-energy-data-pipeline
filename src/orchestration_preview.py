@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from acquire_elia import AcquisitionResult, verify_acquisition
 from correction_policy import SOURCE_POLICIES, automatic_corrections
 from merge_ods001 import preview_csv
 from operations import run_cli
@@ -31,10 +32,13 @@ def plan_csv(
     *,
     source_policy: str = "restricted",
     input_scope: str = "continuous",
+    api_acquisition: AcquisitionResult | None = None,
 ) -> PipelinePlan:
     """Determine the next action without running ingestion or dbt."""
 
     automatic_corrections(source_policy, input_scope)
+    if source_policy == "elia-api":
+        verify_acquisition(api_acquisition, csv_path)
     # 1. Calculate the file checksum
     checksum = calculate_sha256(csv_path)
 

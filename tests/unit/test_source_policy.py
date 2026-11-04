@@ -193,3 +193,118 @@ def test_cli_forwards_explicit_full_export_policy(monkeypatch, entrypoint):
     module.main()
     assert call.call_args.kwargs["source_policy"] == "elia-full"
     assert call.call_args.kwargs["input_scope"] == "continuous"
+
+
+@pytest.fixture
+def api_receipt(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from elia_api_support import api_transport
+
+    from acquire_elia import acquire_elia
+
+    start = datetime(2025, 1, 1, tzinfo=UTC)
+    return acquire_elia(
+        start,
+        start + timedelta(days=1),
+        output_dir=tmp_path,
+        opener=api_transport([["2025-01-01T00:00:00Z", "PT15M", *["1000"] * 8]]),
+        sleep=Mock(),
+    )
+
+
+def test_api_policy_uses_same_historized_merge_with_receipt(
+    simulated, api_receipt, monkeypatch
+):
+    from correction_policy import API_CORRECTION_REASON
+
+    receipt = api_receipt
+    monkeypatch.setattr(ingestion, "calculate_sha256", lambda path: receipt.sha256)
+    result = ingestion.ingest_csv(
+        receipt.file_path,
+        source_policy="elia-api",
+        input_scope="partial",
+        api_acquisition=receipt,
+        extracted_at=receipt.extracted_at,
+        source_reference=receipt.source_reference,
+    )
+    assert (result.rows_inserted, result.rows_updated, result.rows_unchanged) == (
+        2,
+        1,
+        1,
+    )
+    assert simulated.events == ["lock", "archive", "update", "insert", "unlock"]
+    simulated.archive.assert_called_once_with(
+        simulated.conn, 7, extracted_at=receipt.extracted_at
+    )
+    batch = next(
+        call
+        for call in simulated.conn.execute.call_args_list
+        if call.args[0].startswith("INSERT INTO staging.ingestion_batch")
+    )
+    assert batch.args[1][2:] == (
+        "partial",
+        "authorized",
+        receipt.sha256,
+        API_CORRECTION_REASON,
+        receipt.extracted_at,
+        receipt.source_reference,
+    )
+    assert ingestion.evaluate_quality.call_args.kwargs["check_continuity"] is False
+    ingestion.check_consolidated.assert_called_once()
+
+
+def test_api_hash_rechecked_under_ingestion_lock(simulated, api_receipt, monkeypatch):
+    receipt = api_receipt
+    # The real receipt verification succeeds before connection; simulate a file
+    # change only when the ingestion lock's second checksum is read.
+    monkeypatch.setattr(ingestion, "calculate_sha256", lambda path: "b" * 64)
+    with pytest.raises(ValueError, match="changed before ingestion"):
+        ingestion.ingest_csv(
+            receipt.file_path,
+            source_policy="elia-api",
+            input_scope="partial",
+            api_acquisition=receipt,
+            extracted_at=receipt.extracted_at,
+            source_reference=receipt.source_reference,
+        )
+    simulated.load.assert_not_called()
+    simulated.archive.assert_not_called()
+    assert not any(
+        call.args[0].startswith("INSERT INTO staging.ingestion_batch")
+        for call in simulated.conn.execute.call_args_list
+    )
+
+
+@pytest.mark.parametrize("failure", ["quality", "stale"])
+def test_api_policy_keeps_quality_and_stale_guards(
+    simulated, api_receipt, monkeypatch, failure
+):
+    receipt = api_receipt
+    monkeypatch.setattr(ingestion, "calculate_sha256", lambda path: receipt.sha256)
+    if failure == "quality":
+        ingestion.evaluate_quality.return_value = [
+            QualityResult("test.blocking", "ERROR", 1, 1, [])
+        ]
+    else:
+        simulated.archive.side_effect = ValueError("Stale extraction")
+    with pytest.raises(ValueError, match="Blocking data quality|Stale extraction"):
+        ingestion.ingest_csv(
+            receipt.file_path,
+            source_policy="elia-api",
+            input_scope="partial",
+            api_acquisition=receipt,
+            extracted_at=receipt.extracted_at,
+            source_reference=receipt.source_reference,
+        )
+    simulated.update.assert_not_called()
+    assert not any(
+        call.args[0].startswith("INSERT INTO staging.elia_load (")
+        for call in simulated.conn.execute.call_args_list
+    )
+    if failure == "quality":
+        simulated.archive.assert_not_called()
+    else:
+        simulated.archive.assert_called_once_with(
+            simulated.conn, 7, extracted_at=receipt.extracted_at
+        )

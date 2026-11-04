@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
+from acquire_elia import AcquisitionResult
 from correction_policy import SOURCE_POLICIES
 from dbt_guard import locked_build
 from dbt_run_store import mark_failed, mark_success, start_build
@@ -42,6 +43,7 @@ def run_pipeline(
     correction_reason: str | None = None,
     extracted_at: datetime | None = None,
     source_reference: str | None = None,
+    api_acquisition: AcquisitionResult | None = None,
 ) -> PipelineResult:
     """Apply the declared source policy, then recheck dbt under its lock.
 
@@ -55,8 +57,16 @@ def run_pipeline(
         extracted_at,
         source_policy=source_policy,
         input_scope=input_scope,
+        api_acquisition=api_acquisition,
+        csv_path=csv_path,
+        source_reference=source_reference,
     )
-    plan = plan_csv(csv_path, source_policy=source_policy, input_scope=input_scope)
+    api_options = (
+        {"api_acquisition": api_acquisition} if api_acquisition is not None else {}
+    )
+    plan = plan_csv(
+        csv_path, source_policy=source_policy, input_scope=input_scope, **api_options
+    )
     if authorized_sha256 is not None and authorized_sha256 != plan.file_sha256:
         raise ValueError("Authorization SHA-256 does not match the input file")
     if (
@@ -78,6 +88,7 @@ def run_pipeline(
             correction_reason=correction_reason,
             extracted_at=extracted_at,
             source_reference=source_reference,
+            **api_options,
         )
     except ChangedObservationsError:
         if automatic:
