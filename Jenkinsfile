@@ -75,6 +75,25 @@ pipeline {
                 }
             }
         }
+        stage('dbt Parse') {
+            steps {
+                withEnv([
+                    'PGHOST=127.0.0.1',
+                    'PGPORT=5432',
+                    'PGDATABASE=ci_parse_only',
+                    'PGUSER=ci_parse_only',
+                    'PGPASSWORD=ci_placeholder_not_a_secret'
+                ]) {
+                    bat '''@echo off
+                        "C:\\Program Files\\Python313\\python.exe" -m venv .venv-dbt
+                        .venv-dbt\\Scripts\\python.exe -m pip install -r dbt\\requirements.txt
+                        .venv-dbt\\Scripts\\python.exe -m pip check
+                        copy /Y dbt\\profiles.yml.example dbt\\profiles.yml >NUL
+                        .venv-dbt\\Scripts\\dbt.exe parse --project-dir dbt --profiles-dir dbt
+                    '''
+                }
+            }
+        }
     }
 
     post {
