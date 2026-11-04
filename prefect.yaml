@@ -30,3 +30,13 @@ deployments:
         active: false
     work_pool:
       name: energy-local
+
+  - name: elia-api-daily
+    entrypoint: src/prefect/api.py:energy_api
+    parameters: {}
+    schedules:
+      - cron: "0 10 * * *"
+        timezone: Europe/Brussels
+        active: false
+    work_pool:
+      name: energy-local

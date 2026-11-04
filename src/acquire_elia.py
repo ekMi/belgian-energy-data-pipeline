@@ -38,6 +38,10 @@ class AcquisitionError(RuntimeError):
     """The acquisition could not produce a validated export."""
 
 
+class AcquisitionValidationError(AcquisitionError):
+    """An HTTP response was received but failed the acquisition data contract."""
+
+
 @dataclass(frozen=True)
 class AcquisitionResult:
     file_path: Path
@@ -149,7 +153,7 @@ def _fetch(
                     )
                 actual_type = response.headers.get("Content-Type", "").split(";")[0]
                 if actual_type.strip().lower() != media_type:
-                    raise AcquisitionError(
+                    raise AcquisitionValidationError(
                         f"GET {url}: expected {media_type}, got {actual_type!r}"
                     )
                 length = response.headers.get("Content-Length")
@@ -159,7 +163,7 @@ def _fetch(
                         if length < 0:
                             raise ValueError
                     except ValueError:
-                        raise AcquisitionError(
+                        raise AcquisitionValidationError(
                             f"GET {url}: invalid Content-Length"
                         ) from None
                 received = 0
@@ -200,7 +204,9 @@ def _validate_export(path: Path, start: datetime, end: datetime) -> int:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.reader(stream, delimiter=";", strict=True)
             if next(reader, None) != EXPECTED_COLUMNS:
-                raise AcquisitionError("Line 1: unexpected CSV header or column order")
+                raise AcquisitionValidationError(
+                    "Line 1: unexpected CSV header or column order"
+                )
             for row in reader:
                 # Acquisition allows NULL in every measurement column. Supply a
                 # finite placeholder only to validate the other fields with the
@@ -213,28 +219,28 @@ def _validate_export(path: Path, start: datetime, end: datetime) -> int:
                 timestamp, resolution = parsed[:2]
                 key = (timestamp, resolution)
                 if key in seen:
-                    raise AcquisitionError(
+                    raise AcquisitionValidationError(
                         f"Line {reader.line_num}: duplicate observation"
                     )
                 if previous is not None and timestamp <= previous:
-                    raise AcquisitionError(
+                    raise AcquisitionValidationError(
                         f"Line {reader.line_num}: timestamps must be strictly increasing"
                     )
                 if timestamp.minute % 15 or timestamp.second or timestamp.microsecond:
-                    raise AcquisitionError(
+                    raise AcquisitionValidationError(
                         f"Line {reader.line_num}: timestamp is not aligned to 15 minutes"
                     )
                 if not start <= timestamp < end:
-                    raise AcquisitionError(
+                    raise AcquisitionValidationError(
                         f"Line {reader.line_num}: timestamp outside requested window"
                     )
                 seen.add(key)
                 previous = timestamp
                 count += 1
     except (ValueError, csv.Error) as error:
-        raise AcquisitionError(f"Invalid CSV: {error}") from error
+        raise AcquisitionValidationError(f"Invalid CSV: {error}") from error
     if not count:
-        raise AcquisitionError("CSV contains no observations")
+        raise AcquisitionValidationError("CSV contains no observations")
     return count
 
 
@@ -287,15 +293,15 @@ def acquire_elia(
         try:
             record_count = json.loads(payload.getvalue())["total_count"]
         except (ValueError, KeyError, TypeError) as error:
-            raise AcquisitionError(
+            raise AcquisitionValidationError(
                 "Invalid /records JSON: expected total_count"
             ) from error
         if type(record_count) is not int or record_count < 0:
-            raise AcquisitionError(
+            raise AcquisitionValidationError(
                 "Invalid /records total_count: expected nonnegative integer"
             )
         if row_count != record_count:
-            raise AcquisitionError(
+            raise AcquisitionValidationError(
                 f"Observation count mismatch: CSV={row_count}, API={record_count}"
             )
         checksum = calculate_sha256(temporary_path)

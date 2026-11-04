@@ -244,7 +244,8 @@ déjà ingéré via le pipeline manuel, sans lui attribuer `elia-api` :
 ```
 
 Cette dernière commande reste soumise à `restricted` si le fichier a changé.
-Aucune intégration Prefect ni planification automatique n'est activée.
+La supervision Prefect est décrite plus bas et dans le [guide Prefect](prefect.md).
+La planification reste livrée inactive.
 
 Tests du raccordement (HTTP et processus dbt simulés) :
 
@@ -253,3 +254,23 @@ Tests du raccordement (HTTP et processus dbt simulés) :
 # Configurer exclusivement les TEST_PG* décrits dans docs/integration_tests.md
 .\.venv\Scripts\python.exe -B -m pytest tests/integration/test_api_pipeline_postgres.py -q -rs
 ```
+
+## Supervision Prefect (phase 9D)
+
+Le flow `belgian-energy-api`, deployment `elia-api-daily`, supervise cette même
+CLI dans `.venv` depuis l'environnement séparé `.venv-prefect`. Sa schedule est
+quotidienne à **10h00 Europe/Brussels**, livrée **inactive**. Sans `start`/`end`,
+il laisse le client calculer la fenêtre glissante ; les deux bornes UTC peuvent
+être fournies pour un lancement historique. Aucun retry automatique du pipeline
+complet n'est configuré.
+
+La CLI renvoie désormais aussi un JSON `status`/`error_type` pour les exceptions :
+`ACQUISITION_FAILED`, `VALIDATION_FAILED`, `INGESTION_FAILED`, `TECHNICAL_ERROR`
+(code 1) ou `INTERRUPTED` (130). Les résultats `SUCCESS`, `NO_CHANGE` et
+`DBT_FAILED` conservent leur structure acquisition/pipeline. Les appelants Python
+conservent les exceptions existantes ; les échecs de validation de réponse sont
+une sous-classe `AcquisitionValidationError` d'`AcquisitionError`.
+
+Voir le [guide Prefect](prefect.md#acquisition-api-quotidienne--elia-api-daily)
+pour l'enregistrement, le lancement manuel, l'activation volontaire de la schedule,
+les diagnostics et les limites du serveur local lorsque le PC est arrêté.

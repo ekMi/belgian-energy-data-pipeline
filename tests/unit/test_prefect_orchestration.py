@@ -13,11 +13,12 @@ import pytest
 
 pytest.importorskip("prefect.flows", reason="Use .venv-prefect for Prefect tests")
 
-from src.prefect import inbox, pipeline  # noqa: E402
+from src.prefect import api, inbox, pipeline  # noqa: E402
 
 
 @pytest.fixture
 def local(monkeypatch, tmp_path):
+    monkeypatch.setattr(api, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(inbox, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(inbox, "STABILITY_SECONDS", 0)
@@ -336,6 +337,8 @@ def test_no_business_retries():
     assert pipeline.run_local_pipeline.retries == 0
     assert pipeline.energy_pipeline.retries == 0
     assert inbox.energy_inbox.retries == 0
+    assert api.run_api_pipeline_cli.retries == 0
+    assert api.energy_api.retries == 0
 
 
 def test_deployment_config_with_installed_prefect_391(monkeypatch):
@@ -355,7 +358,9 @@ def test_deployment_config_with_installed_prefect_391(monkeypatch):
     assert pull[0]["prefect.deployments.steps.set_working_directory"][
         "directory"
     ] == str(root)
-    manual, auto = config["deployments"]
+    deployments = {item["name"]: item for item in config["deployments"]}
+    assert set(deployments) == {"elia-manual", "elia-inbox", "elia-api-daily"}
+    manual, auto = deployments["elia-manual"], deployments["elia-inbox"]
     assert manual["schedules"] == []
     assert manual["name"] == "elia-manual"
     assert manual["parameters"]["source_policy"] == "elia-full"
@@ -382,3 +387,282 @@ def test_deployment_config_with_installed_prefect_391(monkeypatch):
         if deployment is auto:
             assert built.concurrency_limit == 1
             assert built.schedules[0].active is False
+
+
+def api_payload(status="SUCCESS"):
+    return {
+        "status": status,
+        "acquisition": {
+            "file_path": "data/raw/api/export.csv",
+            "window_start_utc": "2025-10-01T00:00:00Z",
+            "window_end_utc": "2025-11-08T00:00:00Z",
+            "extracted_at": "2025-10-31T10:00:00Z",
+            "source_reference": "https://external-elia.opendatasoft.com/api/explore/v2.1/catalog/datasets/ods001/exports/csv?where=filter",
+            "row_count": 10,
+            "sha256": "a" * 64,
+        },
+        "pipeline": {
+            "status": status,
+            "ingestion_batch_id": 4,
+            "target_batch_id": None if status == "NO_CHANGE" else 4,
+            "build_id": None if status == "NO_CHANGE" else 7,
+            "rows_new": None if status == "NO_CHANGE" else 3,
+            "rows_changed": None if status == "NO_CHANGE" else 2,
+            "error_type": "DBT_BUILD_FAILED" if status == "DBT_FAILED" else None,
+        },
+    }
+
+
+@pytest.mark.parametrize("status", ["SUCCESS", "NO_CHANGE", "DBT_FAILED"])
+def test_api_subprocess_and_diagnostics(local, status, capsys):
+    root, run = local
+    payload = api_payload(status)
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=api.EXIT_CODES[status],
+        stdout=json.dumps(payload),
+        stderr="api_acquired\ningestion_finished\nquality_warnings\ndbt_finished",
+    )
+    if status == "DBT_FAILED":
+        with pytest.raises(pipeline.PipelineExecutionError) as error:
+            api.run_api_pipeline_cli.fn()
+        result = error.value.result
+    else:
+        result = api.run_api_pipeline_cli.fn()
+    assert result["status"] == status
+    assert result["acquisition"] == payload["acquisition"]
+    assert result["pipeline"] == payload["pipeline"]
+    assert result["rows_unchanged"] == (None if status == "NO_CHANGE" else 5)
+    assert run.call_args.args[0] == [
+        str(root / ".venv/Scripts/python.exe"),
+        "-B",
+        str(root / "src/api_pipeline.py"),
+    ]
+    assert run.call_args.kwargs["cwd"] == root
+    assert run.call_args.kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert run.call_args.kwargs["capture_output"] is True
+    assert run.call_args.kwargs["encoding"] == "utf-8"
+    assert run.call_args.kwargs["check"] is False
+    run.assert_called_once()
+    logs = capsys.readouterr().out
+    for event in (
+        "api_acquisition_started",
+        "api_acquisition_finished",
+        "export.csv",
+        "row_count=10",
+        "ingestion batch_id=4",
+        "NEW=",
+        "UNCHANGED=",
+        "CHANGED=",
+        "dbt status=",
+        f"final_status={status}",
+        "quality_warnings",
+    ):
+        assert event in logs
+
+
+def test_api_historical_window_passed_verbatim(local):
+    _, run = local
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=0, stdout=json.dumps(api_payload()), stderr=""
+    )
+    start, end = "2025-10-26T00:00:00Z", "2025-10-26T02:00:00Z"
+    api.run_api_pipeline_cli.fn(start, end)
+    assert run.call_args.args[0][3:] == ["--start", start, "--end", end]
+
+
+@pytest.mark.parametrize(
+    "start,end", [("2025-10-26T00:00:00Z", None), (None, "2025-10-26T02:00:00Z")]
+)
+def test_api_partial_window_never_launches(local, start, end):
+    _, run = local
+    with pytest.raises(ValueError, match="both"):
+        api.run_api_pipeline_cli.fn(start, end)
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "ACQUISITION_FAILED",
+        "VALIDATION_FAILED",
+        "INGESTION_FAILED",
+        "TECHNICAL_ERROR",
+        "INTERRUPTED",
+    ],
+)
+def test_api_error_categories_are_propagated(local, status, capsys):
+    _, run = local
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=api.EXIT_CODES[status],
+        stdout=json.dumps({"status": status, "error_type": "SyntheticError"}),
+        stderr="safe diagnostic",
+    )
+    with pytest.raises(pipeline.PipelineExecutionError) as error:
+        api.run_api_pipeline_cli.fn()
+    assert error.value.result["status"] == status
+    assert error.value.result["error_type"] == "SyntheticError"
+    assert error.value.result["stderr"] == "safe diagnostic"
+    assert error.value.result["stdout"] == run.return_value.stdout
+    assert f"final_status={status}" in capsys.readouterr().out
+    run.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "stdout,code",
+    [
+        ("", 1),
+        ("", 0),
+        ("not json", 0),
+        ("[]", 0),
+        ("{}", 0),
+        ('{"status":[]}', 0),
+        ('{"status":"UNKNOWN"}', 0),
+        ('{"status":"SUCCESS"}', 0),
+        ('{"status":"ACQUISITION_FAILED"}', 1),
+    ],
+)
+def test_api_invalid_or_empty_json_fails(local, stdout, code):
+    _, run = local
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=code, stdout=stdout, stderr="diagnostic"
+    )
+    with pytest.raises(pipeline.PipelineExecutionError) as error:
+        api.run_api_pipeline_cli.fn()
+    assert error.value.result["status"] == "TECHNICAL_ERROR"
+    assert error.value.result["exit_code"] == code
+    assert error.value.result["stdout"] == stdout
+    assert error.value.result["stderr"] == "diagnostic"
+
+
+@pytest.mark.parametrize("code", [1, 2, 17])
+def test_api_success_with_nonzero_exit_never_succeeds(local, code):
+    _, run = local
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=code, stdout=json.dumps(api_payload()), stderr=""
+    )
+    with pytest.raises(pipeline.PipelineExecutionError):
+        api.run_api_pipeline_cli.fn()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("acquisition", None),
+        ("pipeline", {}),
+        ("acquisition.file_path", ""),
+        ("acquisition.row_count", True),
+        ("acquisition.row_count", 0),
+        ("acquisition.sha256", "invalid"),
+        ("acquisition.window_start_utc", "2025-10-01"),
+        ("pipeline.status", "NO_CHANGE"),
+        ("pipeline.ingestion_batch_id", -1),
+        ("pipeline.rows_new", 9),
+        ("pipeline.rows_changed", -1),
+    ],
+)
+def test_api_incomplete_or_inconsistent_envelope_rejected(local, field, value):
+    _, run = local
+    payload = api_payload()
+    keys = field.split(".")
+    parent = payload if len(keys) == 1 else payload[keys[0]]
+    parent[keys[-1]] = value
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=0, stdout=json.dumps(payload), stderr=""
+    )
+    with pytest.raises(pipeline.PipelineExecutionError) as error:
+        api.run_api_pipeline_cli.fn()
+    assert error.value.result["status"] == "TECHNICAL_ERROR"
+
+
+@pytest.mark.parametrize("code", [130, -2, -1073741510, 3221225786])
+def test_api_interrupted_process_without_json(local, code):
+    _, run = local
+    run.side_effect = None
+    run.return_value = SimpleNamespace(returncode=code, stdout="", stderr="interrupted")
+    with pytest.raises(pipeline.PipelineExecutionError) as error:
+        api.run_api_pipeline_cli.fn()
+    assert error.value.result["status"] == "INTERRUPTED"
+
+
+def test_api_launch_failure_retains_safe_category(local):
+    _, run = local
+    run.side_effect = OSError("password=must-not-be-printed")
+    with pytest.raises(pipeline.PipelineExecutionError) as error:
+        api.run_api_pipeline_cli.fn()
+    assert error.value.result["status"] == "TECHNICAL_ERROR"
+    assert error.value.result["error_type"] == "OSError"
+    assert "must-not-be-printed" not in str(error.value)
+
+
+def test_api_transport_diagnostics_cannot_be_replaced_by_json(local):
+    _, run = local
+    payload = {**api_payload(), "stdout": "forged", "stderr": "forged", "exit_code": 42}
+    run.side_effect = None
+    run.return_value = SimpleNamespace(
+        returncode=0, stdout=json.dumps(payload), stderr="real diagnostic"
+    )
+    result = api.run_api_pipeline_cli.fn()
+    assert result["exit_code"] == 0
+    assert result["stdout"] == run.return_value.stdout
+    assert result["stderr"] == "real diagnostic"
+
+
+def test_api_flow_forwards_only_optional_bounds(local, monkeypatch):
+    call = Mock(return_value={"status": "SUCCESS"})
+    monkeypatch.setattr(api, "run_api_pipeline_cli", call)
+    assert api.energy_api.fn() == {"status": "SUCCESS"}
+    call.assert_called_once_with(start=None, end=None)
+    call.reset_mock()
+    api.energy_api.fn(start="2025-01-01T00:00:00Z", end="2025-01-02T00:00:00Z")
+    call.assert_called_once_with(
+        start="2025-01-01T00:00:00Z", end="2025-01-02T00:00:00Z"
+    )
+
+
+def test_api_daily_deployment_and_brussels_dst():
+    from datetime import UTC, datetime
+
+    import yaml
+    from prefect.cli.deploy._schedules import _schedule_config_to_deployment_schedule
+    from prefect.deployments.runner import RunnerDeployment
+    from prefect.flows import load_flow_from_entrypoint
+    from prefect.server.schemas.schedules import CronSchedule
+
+    root = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((root / "prefect.yaml").read_text("utf-8-sig"))
+    item = next(
+        item for item in config["deployments"] if item["name"] == "elia-api-daily"
+    )
+    assert item["parameters"] == {}
+    assert item["work_pool"]["name"] == "energy-local"
+    schedule = _schedule_config_to_deployment_schedule(item["schedules"][0])
+    assert schedule["active"] is False
+    assert schedule["schedule"].cron == "0 10 * * *"
+    assert schedule["schedule"].timezone == "Europe/Brussels"
+    loaded = load_flow_from_entrypoint(str(root / item["entrypoint"]))
+    assert loaded.name == "belgian-energy-api"
+    built = RunnerDeployment.from_flow(
+        loaded,
+        name=item["name"],
+        work_pool_name="energy-local",
+        parameters={},
+        schedules=[schedule],
+    )
+    assert built.schedules[0].active is False
+    assert built.work_pool_name == "energy-local"
+    assert built._parameter_openapi_schema.properties["start"]["default"] is None
+    cron = CronSchedule(cron="0 10 * * *", timezone="Europe/Brussels")
+    for day, hours in (
+        (datetime(2025, 3, 29, tzinfo=UTC), [9, 8, 8]),
+        (datetime(2025, 10, 25, tzinfo=UTC), [8, 9, 9]),
+    ):
+        iterator = cron._get_dates_generator(n=3, start=day)
+        dates = [next(iterator) for _ in range(3)]
+        assert [date.astimezone(UTC).hour for date in dates] == hours
+        assert all(date.hour == 10 for date in dates)

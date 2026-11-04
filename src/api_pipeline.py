@@ -8,9 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import psycopg
+
 from acquire_elia import (
     DEFAULT_OUTPUT_DIR,
+    AcquisitionError,
     AcquisitionResult,
+    AcquisitionValidationError,
     _utc_argument,
     acquire_elia,
     verify_acquisition,
@@ -49,6 +53,7 @@ def run_api_pipeline(
     sleep: Callable | None = None,
 ) -> ApiPipelineResult:
     """Only an acquisition issued here may grant the elia-api policy."""
+    logger.info("api_acquisition_started")
     acquisition = acquire_elia(
         window_start_utc,
         window_end_utc,
@@ -60,8 +65,9 @@ def run_api_pipeline(
     )
     verify_acquisition(acquisition)
     logger.info(
-        "api_acquired file=%r sha256=%s extracted_at=%s source_reference=%r",
+        "api_acquired file=%r row_count=%s sha256=%s extracted_at=%s source_reference=%r",
         str(acquisition.file_path),
+        acquisition.row_count,
         acquisition.sha256,
         acquisition.extracted_at.isoformat(),
         acquisition.source_reference,
@@ -85,13 +91,32 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--max-retries", type=int, default=3)
     args = parser.parse_args()
-    result = run_api_pipeline(
-        args.start,
-        args.end,
-        output_dir=args.output_dir,
-        timeout=args.timeout,
-        max_retries=args.max_retries,
-    )
+    try:
+        result = run_api_pipeline(
+            args.start,
+            args.end,
+            output_dir=args.output_dir,
+            timeout=args.timeout,
+            max_retries=args.max_retries,
+        )
+    except (Exception, KeyboardInterrupt) as error:
+        # Only the CLI gains a structured failure envelope. Python callers keep
+        # the original exceptions, and no database/HTTP error text is disclosed.
+        if isinstance(error, KeyboardInterrupt):
+            status, code = "INTERRUPTED", 130
+        elif isinstance(error, (AcquisitionValidationError, ValueError)):
+            status, code = "VALIDATION_FAILED", 1
+        elif isinstance(error, AcquisitionError):
+            status, code = "ACQUISITION_FAILED", 1
+        elif isinstance(error, psycopg.Error):
+            status, code = "INGESTION_FAILED", 1
+        else:
+            status, code = "TECHNICAL_ERROR", 1
+        logger.error(
+            "api_pipeline_failed status=%s error_type=%s", status, type(error).__name__
+        )
+        print(json.dumps({"status": status, "error_type": type(error).__name__}))
+        raise SystemExit(code) from None
     print(json.dumps(result.to_dict()))
     if result.status in ("DBT_FAILED", "AWAITING_APPROVAL"):
         raise SystemExit(1)

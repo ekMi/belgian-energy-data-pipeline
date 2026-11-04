@@ -19,8 +19,9 @@ déjà être configurés selon les guides [d'exploitation](operations.md) et
 | --- | --- | --- |
 | `elia-manual` | `belgian-energy-pipeline` | Manuel, paramètre `csv_path`, sans horaire |
 | `elia-inbox` | `energy-inbox` | Manuel ou Cron toutes les 5 minutes, `Europe/Brussels`, initialement **inactif** |
+| `elia-api-daily` | `belgian-energy-api` | Manuel ou tous les jours à **10h00 Europe/Brussels**, initialement **inactif** |
 
-Les deux deployments utilisent la politique métier `elia-full` : les mises à
+Les deux deployments CSV utilisent la politique métier `elia-full` : les mises à
 jour ordinaires de la source Elia, y compris `CHANGED`, sont acceptées et
 historisées automatiquement, après les contrôles techniques habituels. La
 [politique commune](authorized_corrections.md) est exécutée par le script métier,
@@ -52,7 +53,7 @@ Valider toute mise à jour avant de renouveler ce snapshot. Vérifier que
 les wheels disponibles ; le dépannage SQLAlchemy ci-dessous est facultatif.
 
 Les trois environnements restent séparés : Prefect s'importe dans
-`.venv-prefect`, `local_pipeline.py` utilise `.venv\Scripts\python.exe`, et le
+`.venv-prefect`, `local_pipeline.py` et `api_pipeline.py` utilisent `.venv\Scripts\python.exe`, et le
 pipeline métier lance dbt avec `.venv-dbt`. L'activation des environnements
 n'est pas nécessaire avec les exécutables explicites.
 
@@ -112,7 +113,7 @@ processus. Ne pas supprimer ce fichier pendant une exécution.
 
 Serveur **et** worker doivent rester actifs. Un serveur seul peut planifier
 des runs mais n'exécute pas l'ingestion. Un PC éteint ou en veille ne traite
-aucun CSV. Au redémarrage, inspecter les runs en retard et annuler ceux qui ne
+aucune acquisition ni ingestion. Au redémarrage, inspecter les runs en retard et annuler ceux qui ne
 sont plus souhaités avant de relancer le worker.
 
 ## Enregistrer les deployments et les lancer dans l'interface
@@ -148,6 +149,8 @@ Dans **Deployments**, choisir un deployment puis **Run** ou **Quick run** :
    et **ne déplace pas le CSV**. Les paramètres du deployment sont
    `source_policy=elia-full`, `input_scope=continuous`. Pour un import partiel
    exceptionnel, sélectionner `source_policy=restricted` et `input_scope=partial`.
+
+Pour le parcours API, voir la procédure `elia-api-daily` ci-dessous.
 
 Ne pas fournir au flow manuel un fichier déjà pris en charge par le parent.
 Le verrou d'inbox ne couvre pas les appels directs au script métier ; les
@@ -384,3 +387,179 @@ avec les cinq variables `TEST_PG*` ; voir le [guide dédié](integration_tests.m
 Ne jamais les diriger vers `belgian_energy`. La recette UI avec un CSV réel et
 l'activation du Cron sont des validations manuelles distinctes, à effectuer
 seulement après autorisation du traitement.
+
+## Acquisition API quotidienne : elia-api-daily
+
+Le flow `belgian-energy-api` (`src/prefect/api.py:energy_api`) contient une seule
+task, `run-api-pipeline`. Elle lance `.venv/Scripts/python.exe -B
+src/api_pipeline.py`, attend sa fin et contrôle le JSON **et** le code de sortie.
+Le sous-processus conserve la preuve d'acquisition de 9C et réalise acquisition,
+validation, ingestion avec `elia-api`, corrections historisées et dbt. Prefect
+n'importe aucun module métier et ne reconstitue pas lui-même de reçu fiable.
+La [documentation API](elia_api.md) décrit ce parcours métier et ses limites.
+
+Les trois deployments coexistent dans le pool **process** `energy-local`, avec le
+même worker. `elia-manual` lit un CSV donné ; `elia-inbox` prend un CSV prêt et le
+classe ; `elia-api-daily` acquiert directement les observations et conserve son
+CSV sous `data/raw/api/`. Le flow API ne déplace rien vers inbox/processing/archive
+et ne crée pas de fichier `.result.json` à côté du CSV. Le JSON et les logs Prefect,
+les fichiers acquis et les diagnostics SQL existants assurent la traçabilité.
+
+### Enregistrement et premier lancement manuel
+
+Depuis le terminal d'administration, avec le serveur et le worker existants en
+fonctionnement selon les commandes plus haut :
+
+```powershell
+Set-Location 'D:\Utilisateurs\Mike\Projets\belgian-energy-data-pipeline'
+$env:PREFECT_API_URL = 'http://127.0.0.1:4200/api'
+$env:ENERGY_PROJECT_ROOT = (Get-Location).Path
+
+# Enregistrer seulement le nouveau deployment ; ne lance pas le pipeline
+.\.venv-prefect\Scripts\prefect.exe deploy --name elia-api-daily --prefect-file prefect.yaml --no-prompt
+.\.venv-prefect\Scripts\prefect.exe deployment inspect 'belgian-energy-api/elia-api-daily'
+.\.venv-prefect\Scripts\prefect.exe deployment schedule ls 'belgian-energy-api/elia-api-daily'
+```
+
+Le YAML déclare `parameters: {}` et une schedule `0 10 * * *`, fuseau
+`Europe/Brussels`, **`active: false`**. Aucun enregistrement n'est effectué par le
+développement ou les tests. `deploy --all` réenregistre les trois deployments et
+remet les deux schedules du YAML à l'état inactif. Inspecter cet état après chaque
+réenregistrement. Le type `process` appartient au pool existant ; aucun autre
+pool, worker ou service Windows n'est créé.
+
+Pour démarrer les composants s'ils sont arrêtés, utiliser deux terminaux séparés,
+après les variables communes indiquées plus haut :
+
+```powershell
+# Terminal serveur, seulement s'il n'est pas déjà lancé
+.\.venv-prefect\Scripts\prefect.exe server start --host 127.0.0.1 --port 4200
+
+# Terminal worker, seulement s'il n'est pas déjà lancé
+.\.venv-prefect\Scripts\prefect.exe worker start --pool energy-local --type process --name energy-local-worker --limit 1
+```
+
+Dans <http://127.0.0.1:4200>, ouvrir **Deployments**, choisir
+**belgian-energy-api / elia-api-daily**, puis **Run** :
+
+1. Pour une première validation contrôlée, renseigner `start` et `end`, par
+   exemple `2025-10-26T00:00:00Z` et `2025-10-26T02:00:00Z` (fin exclusive).
+   Ce lancement écrit réellement en staging et lance dbt.
+2. Pour la fenêtre courante, laisser les deux valeurs à `null` ou omises. Ne pas
+   saisir les chaînes littérales `"null"` ou des chaînes vides.
+3. Déclencher puis suivre **Flow Runs**, ouvrir le run et sa task. Attendre
+   `Completed` et vérifier le statut métier `SUCCESS` ou `NO_CHANGE`, les batchs
+   et les logs dbt avant d'activer l'horaire.
+
+Les deux bornes doivent être fournies ensemble, en ISO 8601 UTC (`Z` ou
+`+00:00`). Le flow les transmet directement au client. Sans bornes, il ne passe
+aucune option temporelle : `api_pipeline.py` calcule sa fenêtre de 30 jours passés
+jusqu'à 8 jours futurs au moment réel d'exécution. Prefect ne recalcule ni cette
+fenêtre ni une fenêtre à partir de l'heure théorique du run.
+
+### Activer ou désactiver l'horaire
+
+Après validation manuelle, inspecter la schedule puis l'activer volontairement :
+
+```powershell
+.\.venv-prefect\Scripts\prefect.exe deployment schedule ls 'belgian-energy-api/elia-api-daily'
+# Ce deployment possède une seule schedule dans prefect.yaml
+.\.venv-prefect\Scripts\prefect.exe deployment schedule resume 'belgian-energy-api/elia-api-daily' --all
+.\.venv-prefect\Scripts\prefect.exe deployment schedule ls 'belgian-energy-api/elia-api-daily'
+
+# Pour la désactiver ensuite
+.\.venv-prefect\Scripts\prefect.exe deployment schedule pause 'belgian-energy-api/elia-api-daily' --all
+```
+
+Le bouton de schedule dans l'interface donne le même contrôle. L'heure reste
+**10h00 à Bruxelles** lors des changements d'heure : 09h00 UTC en hiver, 08h00 UTC
+en été. Ce n'est pas un intervalle fixe de 24 heures en UTC. Désactiver la
+schedule ne stoppe pas un traitement actif et peut laisser des runs déjà créés :
+les examiner dans l'interface. La schedule inbox reste indépendante.
+
+### Résultats, logs et diagnostic
+
+| Résultat CLI API | Code | État Prefect |
+| --- | --- | --- |
+| `SUCCESS` | 0 | `Completed` |
+| `NO_CHANGE` | 0 | `Completed` |
+| `DBT_FAILED` | 1 | `Failed`, staging validé conservé |
+| `ACQUISITION_FAILED` | 1 | `Failed`, problème HTTP/réseau d'acquisition |
+| `VALIDATION_FAILED` | 1 | `Failed`, réponse API/CSV, intégrité ou données refusées |
+| `INGESTION_FAILED` | 1 | `Failed`, exception PostgreSQL |
+| `TECHNICAL_ERROR` | 1 | `Failed`, autre exception technique |
+| `INTERRUPTED` | 130 | `Failed` si l'enfant retourne ce code |
+| JSON vide/invalide/incomplet ou code incompatible | quelconque | `Failed` |
+
+La CLI ajoute aux erreurs un JSON `status`/`error_type`, sans texte d'exception
+PostgreSQL ni identifiants. La nouvelle sous-classe
+`AcquisitionValidationError` distingue les réponses invalides des erreurs de
+transport ; elle reste une `AcquisitionError` pour les appelants Python existants.
+Le contrat Python et les contrôles métier sont conservés. Les erreurs de syntaxe
+CLI gardent le code 2, que le flow traite comme échec technique.
+
+Les logs affichent le début du lancement, `api_acquisition_started`, puis
+`api_acquired` avec le fichier, le compte et l'heure réelle d'acquisition. Le
+résumé Prefect indique `api_acquisition_finished`, l'identifiant du batch,
+`NEW`/`UNCHANGED`/`CHANGED`, l'identifiant du build dbt et le statut final.
+`UNCHANGED` est calculé à partir du compte reçu et des compteurs métier lorsqu'ils
+sont disponibles ; les compteurs restent `null` sur certains passages idempotents.
+Sans build nécessaire, le résumé dbt indique `UP_TO_DATE`. Les avertissements de
+qualité sur `Total Load` récent/futur ne deviennent pas artificiellement des
+échecs Prefect.
+
+Le sous-processus est attendu avec capture de ses sorties : les logs métier sont
+republiés **à sa fin**, sans streaming en temps réel. Pour un échec après
+acquisition, `api_acquired` permet de retrouver le CSV même si le résultat final
+ne contient qu'une catégorie d'erreur. Pour un processus tué brutalement, le
+résultat ou les derniers logs peuvent manquer ; l'état Prefect peut alors être
+`Crashed`/`Cancelled` plutôt que `Failed`. Aucun résultat incomplet ne produit un
+succès technique. Les résultats Python ne sont pas persistés par les flows.
+
+```powershell
+.\.venv-prefect\Scripts\prefect.exe flow-run ls
+$apiFlowRunId = 'REMPLACER_PAR_UUID_DU_RUN'
+.\.venv-prefect\Scripts\prefect.exe flow-run inspect $apiFlowRunId
+.\.venv-prefect\Scripts\prefect.exe flow-run logs $apiFlowRunId
+```
+
+### Reprise, concurrence et disponibilité du PC
+
+Flow et task ont **`retries=0`**. Seul le client d'acquisition effectue ses retries
+HTTP bornés ; un incident ne relance pas automatiquement toute l'acquisition.
+Après diagnostic et correction de la cause, déclencher volontairement un nouveau
+run du deployment. Pour rejouer un périmètre, renseigner les deux bornes UTC.
+Après `DBT_FAILED`, staging et les corrections restent conservés ; un nouveau run
+utilise le mécanisme existant d'idempotence et de reconstruction dbt manquante.
+Une nouvelle acquisition peut contenir des révisions Elia supplémentaires.
+La reprise du fichier déjà ingéré via le pipeline manuel reste décrite dans le
+guide API. Ne pas remettre les extraits API dans le parcours inbox `elia-full`.
+
+Le worker existant `--limit 1` prend un seul run de deployment à la fois pour les
+trois parcours. Des lancements directs hors worker peuvent néanmoins se
+chevaucher. Les verrous PostgreSQL communs restent responsables de l'ingestion
+et de dbt ; un conflit ou un timeout doit être diagnostiqué puis repris
+manuellement. L'acquisition HTTP peut se chevaucher sans supprimer ces garanties.
+Aucune nouvelle couche de verrouillage ni limite globale supplémentaire n'est
+ajoutée.
+
+Un serveur local seul peut créer des runs planifiés, mais il faut un worker actif
+pour les exécuter. Si le worker est indisponible, des runs peuvent rester en
+attente ou en retard. Quand le PC est éteint ou en veille, ni acquisition ni
+ingestion n'a lieu ; Prefect ne réveille pas le PC. Au redémarrage, inspecter et
+annuler les anciens runs non souhaités avant de relancer le worker. Un run retardé
+sans bornes utilise la fenêtre courante au moment du lancement, sans garantie de
+rattrapage historique au-delà de celle-ci. Aucun service Windows, cloud ou
+rafraîchissement automatique de Power BI n'est installé.
+
+La CI existante exécute les nouveaux cas dans les mêmes modules de tests :
+
+```powershell
+.\.venv-prefect\Scripts\python.exe -B ci/run_tests.py prefect
+.\.venv\Scripts\python.exe -B ci/run_tests.py unit
+```
+
+Elle vérifie les trois deployments, les transitions d'heure, les sorties CLI
+simulées, et les états réels flow/task avec un serveur Prefect temporaire isolé.
+Aucun appel réel à Elia, aucune ingestion PostgreSQL et aucun enregistrement de
+deployment sur le serveur utilisateur ne sont nécessaires à ces tests.

@@ -308,3 +308,56 @@ def test_cli_json_exit_and_explicit_window(monkeypatch, capsys, receipt, status,
         api_pipeline.main()
     assert json.loads(capsys.readouterr().out)["status"] == status
     assert run.call_args.args == (START, END)
+
+
+@pytest.mark.parametrize(
+    "error,status,code",
+    [
+        (acquisition.AcquisitionError("HTTP 503"), "ACQUISITION_FAILED", 1),
+        (acquisition.AcquisitionValidationError("invalid CSV"), "VALIDATION_FAILED", 1),
+        (ValueError("invalid input"), "VALIDATION_FAILED", 1),
+        (
+            ingest_ods001.psycopg.OperationalError("password=hidden"),
+            "INGESTION_FAILED",
+            1,
+        ),
+        (RuntimeError("password=hidden"), "TECHNICAL_ERROR", 1),
+        (KeyboardInterrupt(), "INTERRUPTED", 130),
+    ],
+)
+def test_cli_structured_error_categories(monkeypatch, capsys, error, status, code):
+    monkeypatch.setattr(sys, "argv", ["api_pipeline"])
+    monkeypatch.setattr(api_pipeline, "run_api_pipeline", Mock(side_effect=error))
+    with pytest.raises(SystemExit) as exit_error:
+        api_pipeline.main()
+    assert exit_error.value.code == code
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload == {"status": status, "error_type": type(error).__name__}
+    assert "hidden" not in captured.out + captured.err
+
+
+def test_actual_csv_validation_is_reported_as_validation_failure(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "api_pipeline",
+            "--start",
+            "2025-01-01T00:00:00Z",
+            "--end",
+            "2025-01-02T00:00:00Z",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+    monkeypatch.setattr(
+        acquisition, "urlopen", Mock(return_value=http_response(b"invalid header\n"))
+    )
+    with pytest.raises(SystemExit) as error:
+        api_pipeline.main()
+    assert error.value.code == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "VALIDATION_FAILED"
+    ingest_ods001.psycopg.connect.assert_not_called()

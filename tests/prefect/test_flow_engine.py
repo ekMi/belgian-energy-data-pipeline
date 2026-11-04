@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("prefect.flows", reason="Use .venv-prefect for Prefect tests")
 
 from prefect.testing.utilities import prefect_test_harness  # noqa: E402
-from src.prefect import inbox, pipeline  # noqa: E402
+from src.prefect import api, inbox, pipeline  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -146,3 +146,104 @@ def test_manual_flow_retains_both_source_policies(
     ]
     assert len(calls) == 1
     assert source.read_text("utf-8") == "mocked CSV"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "SUCCESS",
+        "NO_CHANGE",
+        "DBT_FAILED",
+        "ACQUISITION_FAILED",
+        "VALIDATION_FAILED",
+        "INGESTION_FAILED",
+        "INVALID_JSON",
+        "INTERRUPTED",
+    ],
+)
+def test_api_flow_and_task_terminal_states(
+    isolated_prefect, monkeypatch, tmp_path, status
+):
+    monkeypatch.setattr(api, "PROJECT_ROOT", tmp_path)
+    real_run = pipeline.subprocess.run
+    calls = []
+    completed = status in {"SUCCESS", "NO_CHANGE"}
+    start, end = "2025-10-26T00:00:00Z", "2025-10-26T02:00:00Z"
+
+    def run(args, **kwargs):
+        if len(args) < 3 or args[2] != str(tmp_path / "src/api_pipeline.py"):
+            return real_run(args, **kwargs)
+        calls.append(args)
+        assert args == [
+            str(tmp_path / ".venv/Scripts/python.exe"),
+            "-B",
+            str(tmp_path / "src/api_pipeline.py"),
+            "--start",
+            start,
+            "--end",
+            end,
+        ]
+        payload = {"status": status, "error_type": "SyntheticError"}
+        if status in {"SUCCESS", "NO_CHANGE", "DBT_FAILED"}:
+            payload = {
+                "status": status,
+                "acquisition": {
+                    "file_path": "data/raw/api/mock.csv",
+                    "row_count": 8,
+                    "window_start_utc": start,
+                    "window_end_utc": end,
+                    "extracted_at": "2025-10-26T10:00:00Z",
+                    "sha256": "a" * 64,
+                    "source_reference": "https://external-elia.opendatasoft.com/api/explore/v2.1/catalog/datasets/ods001/exports/csv",
+                },
+                "pipeline": {
+                    "status": status,
+                    "ingestion_batch_id": 4,
+                    "target_batch_id": None if status == "NO_CHANGE" else 4,
+                    "build_id": None if status == "NO_CHANGE" else 7,
+                    "rows_new": None if status == "NO_CHANGE" else 3,
+                    "rows_changed": None if status == "NO_CHANGE" else 2,
+                    "error_type": "DBT_BUILD_FAILED"
+                    if status == "DBT_FAILED"
+                    else None,
+                },
+            }
+        return SimpleNamespace(
+            returncode=0 if completed else 130 if status == "INTERRUPTED" else 1,
+            stdout="" if status == "INVALID_JSON" else json.dumps(payload),
+            stderr="mock API diagnostic",
+        )
+
+    monkeypatch.setattr(pipeline.subprocess, "run", run)
+    state = api.energy_api(start=start, end=end, return_state=True)
+    assert state.is_completed() is completed
+    assert state.is_failed() is (not completed)
+    result = state.result(raise_on_failure=False)
+    if completed:
+        assert result["status"] == status
+    else:
+        assert isinstance(result, pipeline.PipelineExecutionError)
+        assert result.result["status"] == (
+            "TECHNICAL_ERROR" if status == "INVALID_JSON" else status
+        )
+        assert result.result["stderr"] == "mock API diagnostic"
+    assert len(calls) == 1  # No automatic repeat of the complete API pipeline.
+    from prefect.client.orchestration import get_client
+    from prefect.client.schemas.filters import FlowRunFilter, LogFilter
+    from prefect.logging.handlers import APILogWorker
+
+    # Log transport is batched independently of terminal flow/task states.
+    # Drain deterministically instead of relying on a timing-sensitive sleep.
+    APILogWorker.drain_all(timeout=5)
+    with get_client(sync_client=True) as client:
+        identifier = state.state_details.flow_run_id
+        tasks = client.read_task_runs(
+            flow_run_filter=FlowRunFilter(id={"any_": [identifier]})
+        )
+        assert len(tasks) == 1
+        assert tasks[0].state.is_completed() is completed
+        assert tasks[0].state.is_failed() is (not completed)
+        logs = client.read_logs(
+            log_filter=LogFilter(flow_run_id={"any_": [identifier]})
+        )
+        assert any("mock API diagnostic" in log.message for log in logs)
