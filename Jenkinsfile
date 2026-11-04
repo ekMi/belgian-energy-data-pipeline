@@ -16,6 +16,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 bat 'if exist reports\\pytest.xml del /q reports\\pytest.xml'
+                bat 'if exist reports\\integration.xml del /q reports\\integration.xml'
                 checkout scm
                 bat 'git rev-parse --short HEAD'
                 bat 'whoami'
@@ -47,15 +48,43 @@ pipeline {
                 '''
             }
         }
+        stage('Integration Tests') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'belgian-energy-postgres-test',
+                    usernameVariable: 'TEST_PGUSER',
+                    passwordVariable: 'TEST_PGPASSWORD'
+                )]) {
+                    withEnv([
+                        'TEST_PGHOST=127.0.0.1',
+                        'TEST_PGPORT=5432',
+                        'TEST_PGDATABASE=belgian_energy_test'
+                    ]) {
+                        bat '''@echo off
+                            .venv\\Scripts\\python.exe -c "import os,sys; sys.exit(0 if (os.environ.get('TEST_PGDATABASE') == 'belgian_energy_test' and os.environ.get('TEST_PGUSER') == 'energy_test' and os.environ.get('TEST_PGPASSWORD')) else 1)"
+                        '''
+
+                        bat '''@echo off
+                            .venv\\Scripts\\python.exe -B -m pytest tests/integration -p no:cacheprovider -m integration -ra --junitxml=reports/integration.xml
+                        '''
+
+                        bat '''@echo off
+                            .venv\\Scripts\\python.exe -c "import sys,xml.etree.ElementTree as ET; r=ET.parse('reports/integration.xml').getroot(); suites=[r] if r.tag=='testsuite' else r.findall('testsuite'); count=sum(int(s.get('tests',0)) for s in suites); skipped=sum(int(s.get('skipped',0)) for s in suites); print('Integration tests:',count,'skipped:',skipped); sys.exit(0 if count>0 and skipped==0 else 1)"
+                        '''
+                    }
+                }
+            }
+        }
     }
 
     post {
-         always {
+        always {
             script {
-                if (fileExists('reports/pytest.xml')) {
-                    junit testResults: 'reports/pytest.xml'
+                if (fileExists('reports/pytest.xml') ||
+                    fileExists('reports/integration.xml')) {
+                    junit testResults: 'reports/*.xml'
                 } else {
-                    echo 'No pytest report generated in this build'
+                    echo 'No test reports generated in this build'
                 }
             }
         }
