@@ -8,19 +8,17 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 BASE_URL = (
-    "https://external-elia.opendatasoft.com/api/explore/v2.1/"
-    "catalog/datasets/ods001"
+    "https://external-elia.opendatasoft.com/api/explore/v2.1/catalog/datasets/ods001"
 )
-WHERE = (
-    "datetime >= '2025-10-20T00:00:00Z' "
-    "AND datetime < '2025-10-20T01:00:00Z'"
-)
+WHERE = "datetime >= '2025-10-20T00:00:00Z' AND datetime < '2025-10-20T01:00:00Z'"
 
 
 def fetch(endpoint: str, params: dict[str, str | int]) -> str:
     url = f"{BASE_URL}/{endpoint}?{urlencode(params)}"
     print(f"\nGET {url}")
-    request = Request(url, headers={"User-Agent": "belgian-energy-data-pipeline-probe/1.0"})
+    request = Request(
+        url, headers={"User-Agent": "belgian-energy-data-pipeline-probe/1.0"}
+    )
     with urlopen(request, timeout=20) as response:
         print(f"HTTP status: {response.status}")
         print(f"Content-Type: {response.headers.get('Content-Type')}")

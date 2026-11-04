@@ -21,8 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from validate_ods001 import EXPECTED_COLUMNS, parse_row  # noqa: E402
 
 BASE_URL = (
-    "https://external-elia.opendatasoft.com/api/explore/v2.1/"
-    "catalog/datasets/ods001"
+    "https://external-elia.opendatasoft.com/api/explore/v2.1/catalog/datasets/ods001"
 )
 START = datetime(2025, 10, 1, tzinfo=UTC)
 END = datetime(2025, 10, 31, tzinfo=UTC)  # 30 UTC days, includes autumn DST switch
@@ -86,10 +85,17 @@ def check_historical_window() -> bool:
     ordered = sorted(set(timestamps))
     discontinuities = sum(b - a != STEP for a, b in zip(ordered, ordered[1:]))
     ok = (
-        len(timestamps) == expected_count == count_api
-        and not duplicates and not out_of_bounds and not discontinuities
-        and ordered[0] == START and ordered[-1] == END - STEP
-    ) if ordered else False
+        (
+            len(timestamps) == expected_count == count_api
+            and not duplicates
+            and not out_of_bounds
+            and not discontinuities
+            and ordered[0] == START
+            and ordered[-1] == END - STEP
+        )
+        if ordered
+        else False
+    )
 
     print(
         f"Rows: CSV={len(timestamps)} | API total_count={count_api} | "
@@ -145,8 +151,12 @@ def check_latest() -> bool:
     # Most recent record WITH an actual load value; a forecast can be newer.
     measured = get_json(
         "records",
-        {"where": "totalload IS NOT NULL", "order_by": "datetime DESC", "limit": 1,
-         "timezone": "UTC"},
+        {
+            "where": "totalload IS NOT NULL",
+            "order_by": "datetime DESC",
+            "limit": 1,
+            "timezone": "UTC",
+        },
     ).get("results", [])
     if not measured:
         print("No record with Total Load found")
@@ -156,8 +166,7 @@ def check_latest() -> bool:
         datetime.now(UTC) - latest_measurement.astimezone(UTC)
     ).total_seconds() / 3600
     print(
-        f"Latest record with Total Load: "
-        f"{iso_utc(latest_measurement.astimezone(UTC))}"
+        f"Latest record with Total Load: {iso_utc(latest_measurement.astimezone(UTC))}"
     )
     print(f"Age relative to local execution time: {lag_hours:.1f} hours")
     print("Note: record timestamp is not the publication/update timestamp.")
@@ -173,7 +182,13 @@ def main() -> None:
         try:
             checks.append(check())
         except (
-            HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError, TypeError,
+            HTTPError,
+            URLError,
+            TimeoutError,
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
             csv.Error,
         ) as error:
             print(f"{title} FAILED: {type(error).__name__}: {error}")
