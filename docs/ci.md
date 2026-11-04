@@ -72,8 +72,14 @@ dépôt, sans ses fichiers de paramètres ni les variables API/profil héritées
 Le harness démarre son propre serveur SQLite sur un port libre, puis l'arrête.
 Aucun worker, deployment ou ingestion réelle n'est lancé. Les opérations de
 fichiers des tests utilisent leurs répertoires temporaires, jamais l'inbox réelle.
-Le [dépannage SQLAlchemy Windows](prefect.md#dépannage-sqlalchemy-sous-windows)
-reste facultatif, uniquement après constat d'une erreur d'import compilé.
+Après `setup_env.ps1`, le stage Prefect appelle `ci/ensure_sqlalchemy_pure.ps1`.
+Il exige SQLAlchemy **2.1.6** importable avec `has_compiled_ext() == False`.
+Si nécessaire, il reconstruit cette seule dépendance en Python pur avec
+`DISABLE_SQLALCHEMY_CEXT=1`, `--no-binary SQLAlchemy`, `--no-cache-dir`,
+`--force-reinstall` et `--no-deps`, puis revérifie l'import et `pip check`.
+Une installation conforme est conservée sans reconstruction. La variable de
+compilation est restaurée après installation ; la politique Windows reste inchangée.
+Voir aussi le [dépannage SQLAlchemy Windows](prefect.md#dépannage-sqlalchemy-sous-windows).
 
 Les lanceurs pytest refusent les rapports vides, skips, erreurs et échecs ; ils
 exigent aussi la présence des deux modules dans le rapport Prefect. Pytest reste
@@ -91,6 +97,7 @@ Depuis la racine du dépôt, dans PowerShell :
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File ci/setup_env.ps1 -Environment .venv -Requirements requirements.txt
 powershell -NoProfile -ExecutionPolicy Bypass -File ci/setup_env.ps1 -Environment .venv-prefect -Requirements requirements-prefect.txt
+powershell -NoProfile -ExecutionPolicy Bypass -File ci/ensure_sqlalchemy_pure.ps1 -Environment .venv-prefect
 powershell -NoProfile -ExecutionPolicy Bypass -File ci/setup_env.ps1 -Environment .venv-dbt -Requirements dbt/requirements.txt
 .\.venv\Scripts\ruff.exe check --no-cache .
 .\.venv\Scripts\ruff.exe format --check --no-cache .

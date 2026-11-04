@@ -44,6 +44,7 @@ pipeline {
         stage('Prefect Tests') {
             steps {
                 bat 'powershell -NoProfile -ExecutionPolicy Bypass -File ci\\setup_env.ps1 -Environment .venv-prefect -Requirements requirements-prefect.txt'
+                bat 'powershell -NoProfile -ExecutionPolicy Bypass -File ci\\ensure_sqlalchemy_pure.ps1 -Environment .venv-prefect'
                 bat '.venv-prefect\\Scripts\\python.exe -B ci\\run_tests.py prefect'
             }
         }
