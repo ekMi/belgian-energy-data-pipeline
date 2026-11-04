@@ -61,7 +61,7 @@ pipeline {
                         'TEST_PGDATABASE=belgian_energy_test'
                     ]) {
                         bat '''@echo off
-                            .venv\\Scripts\\python.exe -c "import os,sys; sys.exit(0 if (os.environ.get('TEST_PGDATABASE') == 'belgian_energy_test' and os.environ.get('TEST_PGUSER') == 'energy_test' and os.environ.get('TEST_PGPASSWORD')) else 1)"
+                            .venv\\Scripts\\python.exe -c "import os,sys; sys.exit(0 if (os.environ.get('TEST_PGDATABASE') == 'belgian_energy_test' and os.environ.get('TEST_PGUSER') == 'energy_test_app' and os.environ.get('TEST_PGPASSWORD')) else 1)"
                         '''
 
                         bat '''@echo off
