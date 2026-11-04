@@ -5,7 +5,7 @@ import os
 
 import psycopg
 import pytest
-from postgres_support import TEST_DATABASE, verify_test_database
+from postgres_support import TEST_DATABASE, TEST_LOCK, TEST_USER, verify_test_database
 
 import ingest_ods001
 from config import PROJECT_ROOT
@@ -30,6 +30,8 @@ def test_database(monkeypatch, request):
     params = {key: os.environ[name] for key, name in VARIABLES.items()}
     if params["dbname"] != TEST_DATABASE:
         pytest.fail("TEST_PGDATABASE must be belgian_energy_test", pytrace=False)
+    if params["user"] != TEST_USER:
+        pytest.fail("TEST_PGUSER must be energy_test_app", pytrace=False)
 
     # Do not inherit development libpq service, host, user or other PG settings.
     for name in list(os.environ):
@@ -41,7 +43,9 @@ def test_database(monkeypatch, request):
     def guarded_connect(*args, **kwargs):
         # Ignore no arguments silently: ingestion must use the explicit test config.
         if args or kwargs != params:
-            raise RuntimeError("Unexpected connection parameters in integration test")
+            pytest.fail(
+                "Unexpected connection parameters in integration test", pytrace=False
+            )
         try:
             connection = real_connect(**params)
         except psycopg.OperationalError:
@@ -53,6 +57,13 @@ def test_database(monkeypatch, request):
         try:
             verify_test_database(connection)
             connection.commit()
+        except Exception:
+            connection.close()
+            # Avoid pytest rendering guarded_connect's credential-bearing kwargs
+            # in both the console traceback and the archived JUnit report.
+            pytest.fail(
+                "Cannot verify test database identity; writes refused", pytrace=False
+            )
         except BaseException:
             connection.close()
             raise
@@ -64,7 +75,9 @@ def test_database(monkeypatch, request):
 
     with guarded_connect(**params) as admin:
         # Hold a session lock across setup, ingestion connections and teardown.
-        locked = admin.execute("SELECT pg_try_advisory_lock(81002, 1)").fetchone()[0]
+        locked = admin.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)", TEST_LOCK
+        ).fetchone()[0]
         admin.commit()
         if not locked:
             pytest.fail(

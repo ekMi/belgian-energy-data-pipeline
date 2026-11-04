@@ -4,16 +4,18 @@
 
 These tests exclusively authorize the exact database name belgian_energy_test
 on PostgreSQL 18. They never use development PG environment variables as a
-fallback. Each connection checks current_database() and server_version_num
-before any schema or data write, including connections opened by ingest_csv.
+fallback. Each connection checks current_database(), current_user, session_user
+and server_version_num before any schema or data write, including connections
+opened by ingest_csv. Both database roles must be energy_test_app.
 
 WARNING: The staging and analytics schemas in this dedicated test database are
 fully dropped and recreated for each test, then dropped during teardown. Do not
 store valuable data there. No test database is created automatically. The SQL
 scripts in sql/ are reused unchanged. Production schemas and data are untouched.
 
-A session advisory lock rejects simultaneous runs using these fixtures. It does
-not coordinate with other tools or applications. Use this database only for tests.
+A session advisory lock (81002, 1) rejects simultaneous runs using these fixtures
+or ci/dbt_build.py. It does not coordinate with unrelated tools or applications.
+Use this database only for tests.
 After an interrupted run, the next run resets these two schemas. Tests do not
 depend on execution order or sequence identifiers.
 
@@ -27,13 +29,13 @@ belgian_energy. For example, from PowerShell with psql on PATH:
 
 Run these statements separately, outside a transaction:
 
-    CREATE ROLE energy_test LOGIN;
-    CREATE DATABASE belgian_energy_test OWNER energy_test;
+    CREATE ROLE energy_test_app LOGIN;
+    CREATE DATABASE belgian_energy_test OWNER energy_test_app;
 
 Use the psql interactive password command to set the dedicated role password
 without placing it in SQL history:
 
-    \password energy_test
+    \password energy_test_app
 
 Use a dedicated role with no development database privileges. Do not reuse
 energy_app credentials. If either object already exists, inspect its ownership
@@ -47,8 +49,8 @@ Set these variables in the terminal used to run pytest:
     $env:TEST_PGHOST = 'localhost'
     $env:TEST_PGPORT = '5432'
     $env:TEST_PGDATABASE = 'belgian_energy_test'
-    $env:TEST_PGUSER = 'energy_test'
-    $testCredential = Get-Credential -UserName 'energy_test' -Message 'Test database credentials'
+    $env:TEST_PGUSER = 'energy_test_app'
+    $testCredential = Get-Credential -UserName 'energy_test_app' -Message 'Test database credentials'
     $env:TEST_PGPASSWORD = $testCredential.GetNetworkCredential().Password
     Remove-Variable testCredential
 
@@ -58,8 +60,9 @@ in the environment or fixture variables. Test fixtures use only explicit
 TEST_PG variables and do not load .env.
 
 All five variables must be present and nonempty. Missing variables explicitly
-skip integration tests. A configured unauthorized database name, wrong server
-version or connection failure is an error, not a skip. Connection errors use a
+skip integration tests with direct pytest; the strict Jenkins launcher
+`ci/run_tests.py integration` fails instead. An unauthorized database/user, wrong
+server version or connection failure is an error, not a skip. Connection errors use a
 generic diagnostic so connection details are not echoed. Connection timeout is
 five seconds. Inherited PG* settings are temporarily removed during each fixture;
 pytest restores them afterward. No discovery or connection attempt is made when
