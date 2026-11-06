@@ -37,7 +37,27 @@ models:
                 values: [1, 2, 3, 4, 5, 6, 7]
                 quote: false
       - name: is_weekend
-        description: Vrai pour samedi et dimanche.
+        description: Vrai pour samedi et dimanche, même si le jour est férié.
+        data_tests: [not_null]
+      - name: is_public_holiday
+        description: Vrai pour un des dix jours fériés nationaux du seed 2015-2040.
+        data_tests: [not_null]
+      - name: holiday_name
+        description: Nom français du jour férié ; NULL pour les autres dates.
+      - name: is_business_day
+        description: >-
+          Vrai du lundi au vendredi hors jours fériés nationaux. Ne tient pas
+          compte des jours de remplacement ou congés propres aux entreprises.
+        data_tests: [not_null]
+      - name: day_type
+        description: >-
+          Catégorie Power BI : Férié prime sur Week-end, sinon Jour ouvré.
+          Le calendrier des jours fériés est limité à 2015-2040.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Férié', 'Week-end', 'Jour ouvré']
       - name: season
         description: Saison météorologique en anglais.
         data_tests:

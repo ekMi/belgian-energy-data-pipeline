@@ -91,11 +91,17 @@ def dbt_artifacts():
         f"model.energy.{name}": {"resource_type": "model", "name": name}
         for name in dbt_build.MODELS
     }
+    nodes.update(
+        {
+            f"seed.energy.{name}": {"resource_type": "seed", "name": name}
+            for name in dbt_build.SEEDS
+        }
+    )
     nodes["test.energy.check"] = {"resource_type": "test", "name": "check"}
     results = [
         {
             "unique_id": uid,
-            "status": "success" if node["resource_type"] == "model" else "pass",
+            "status": "pass" if node["resource_type"] == "test" else "success",
         }
         for uid, node in nodes.items()
     ]
@@ -172,3 +178,23 @@ def test_dbt_report_survives_truncated_artifact(tmp_path, monkeypatch):
     report = (tmp_path / "reports/dbt.xml").read_text(encoding="utf-8")
     assert "Interrupted build" in report
     assert "Cannot read dbt run_results.json" in report
+
+
+@pytest.mark.parametrize("status", ["skipped", "warn", "fail", "error"])
+def test_dbt_requires_successful_seed(status):
+    manifest, results = dbt_artifacts()
+    seed = next(r for r in results["results"] if r["unique_id"].startswith("seed."))
+    seed["status"] = status
+    with pytest.raises(RuntimeError):
+        dbt_build.validate_results(manifest, results)
+
+
+def test_dbt_requires_holiday_seed():
+    manifest, results = dbt_artifacts()
+    manifest["nodes"] = {
+        uid: node
+        for uid, node in manifest["nodes"].items()
+        if node["resource_type"] != "seed"
+    }
+    with pytest.raises(RuntimeError, match="holiday seed"):
+        dbt_build.validate_results(manifest, results)

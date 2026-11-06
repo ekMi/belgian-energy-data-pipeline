@@ -24,6 +24,45 @@ dimanche. Les saisons météorologiques sont `winter` (décembre-février),
 `00:15`) ; `time_local` est un `TIME`, sans date ni fuseau. `quarter_hour` va de
 1 à 4 et `time_label` est l'heure `HH` sur deux chiffres.
 
+## Jours fériés et jours ouvrés
+
+Le seed versionné `dbt/seeds/belgian_public_holidays.csv` contient **260 lignes**,
+soit dix jours fériés nationaux par an, de **2015 à 2040 inclus**. Il est joint
+sur `date_local = holiday_date`, avec une seule ligne par date.
+
+| Colonne | Définition |
+| --- | --- |
+| `is_weekend` | Booléen non NULL : samedi ou dimanche, même un jour férié. |
+| `is_public_holiday` | Booléen non NULL : date présente dans le seed. |
+| `holiday_name` | Nom français du jour férié ; NULL sinon. |
+| `is_business_day` | Booléen non NULL : lundi à vendredi, hors jours fériés nationaux. |
+| `day_type` | `Férié` si férié, sinon `Week-end` si samedi/dimanche, sinon `Jour ouvré`. |
+
+La priorité `Férié` > `Week-end` > `Jour ouvré` fournit trois catégories
+exclusives pour le segment interactif Power BI. Par exemple, le samedi
+15 août 2026 est `Férié`, avec les deux indicateurs weekend/férié vrais et
+`is_business_day = false`.
+
+Les sept dates fixes sont le 1er janvier, le 1er mai, le 21 juillet, le
+15 août, le 1er novembre, le 11 novembre et le 25 décembre. Les trois dates
+mobiles sont le lundi de Pâques (Pâques + 1 jour), l'Ascension (+ 39) et le
+lundi de Pentecôte (+ 50). Le générateur calcule Pâques selon l'algorithme
+grégorien Meeus/Jones/Butcher, sans dépendance externe.
+
+Ce calendrier suit les [dix jours fériés nationaux du SPF Emploi](https://emploi.belgique.be/fr/themes/jours-feries-et-conges/jours-feries).
+La définition analytique de « jour ouvré » suppose une semaine du lundi au
+vendredi. Elle exclut les jours de remplacement fixés par secteur ou entreprise,
+les congés extralégaux, les fêtes régionales et les jours propres aux
+administrations. Aucun report automatique au lundi n'est appliqué. Les règles
+futures restent à réviser si la législation change.
+
+Les tests dbt vérifient l'unicité et la non-nullité des dates du seed et de
+la dimension, dix jours par année, les catégories et la cohérence des booléens
+avec le seed. Une date de dimension hors de 2015-2040 fait échouer le contrôle
+de couverture ; étendre le générateur, le seed et ce contrôle avant de charger
+une telle période. Les tests Python figent les références 2015/2026 et un cas
+de Pâques tardif (2038), le tri, les dates mobiles et la reproduction du CSV.
+
 ## Changement d'heure
 
 Le modèle fact_load_15m convertit les timestamps UTC en heure belge.
@@ -50,7 +89,8 @@ Depuis la racine du dépôt, avec le profil local `dbt/profiles.yml` configuré 
 ```powershell
 .\.venv-dbt\Scripts\dbt.exe debug --project-dir .\dbt --profiles-dir .\dbt
 .\.venv-dbt\Scripts\dbt.exe parse --project-dir .\dbt --profiles-dir .\dbt
-.\.venv-dbt\Scripts\dbt.exe run --select dim_date dim_time --project-dir .\dbt --profiles-dir .\dbt
+# Inclure le seed parent lors d'une reconstruction ciblée
+.\.venv-dbt\Scripts\dbt.exe build --select +dim_date dim_time --project-dir .\dbt --profiles-dir .\dbt
 .\.venv-dbt\Scripts\dbt.exe test --select dim_date dim_time --project-dir .\dbt --profiles-dir .\dbt
 ```
 

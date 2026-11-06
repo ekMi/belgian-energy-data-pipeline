@@ -1,0 +1,15 @@
+version: 2
+
+seeds:
+  - name: belgian_public_holidays
+    description: >-
+      Dix jours fériés nationaux belges par an, de 2015 à 2040 inclus.
+      Généré par scripts/generate_belgian_holidays.py ; sans jours de remplacement,
+      fêtes régionales, congés sectoriels ni jours propres aux administrations.
+    columns:
+      - name: holiday_date
+        description: Date civile du jour férié (type PostgreSQL DATE).
+        data_tests: [not_null, unique]
+      - name: holiday_name
+        description: Nom français du jour férié national.
+        data_tests: [not_null]

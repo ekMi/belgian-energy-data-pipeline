@@ -116,3 +116,15 @@ pour vérifier la mise en attente du second. Tester aussi un commit sans lanceme
 manuel pour confirmer le polling. Ne jamais lancer le pipeline métier pour cette
 recette. Une validation locale sans credentials ne prouve pas la réussite des
 stages PostgreSQL, dbt connecté ou de l'exécution sous `jenkins_agent`.
+
+
+### Seed des jours fériés
+
+Le build complet charge `belgian_public_holidays` avant `dim_date`, grâce au
+`ref()` du modèle. La validation des artefacts exige les trois modèles, ce seed
+et tous les tests activés ; les statuts seed autres que `success` sont refusés.
+Les tests unitaires couvrent la génération déterministe des 260 lignes
+2015-2040 et les dates mobiles. Le contrôle dbt couvre les dates uniques/non
+NULL, dix fêtes par année, la plage couverte et les catégories de la dimension.
+Le CSV doit accompagner le code dans le checkout Jenkins ; il n'est pas généré
+pendant l'ingestion ou par une nouvelle tâche Prefect.

@@ -6,3 +6,11 @@ profile: belgian_energy_analytics
 
 model-paths: ["models"]
 clean-targets: ["target", "dbt_packages"]
+
+seed-paths: ["seeds"]
+
+seeds:
+  belgian_energy_analytics:
+    belgian_public_holidays:
+      +column_types:
+        holiday_date: date

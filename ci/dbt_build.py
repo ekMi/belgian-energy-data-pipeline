@@ -27,6 +27,7 @@ from postgres_support import (  # noqa: E402
 )
 
 MODELS = {"dim_date", "dim_time", "fact_load_15m"}
+SEEDS = {"belgian_public_holidays"}
 ARTIFACTS = ROOT / "reports/dbt-build"
 LOGS = ROOT / "reports/dbt-logs"
 
@@ -110,23 +111,28 @@ def validate_results(manifest, results):
     nodes = {
         uid: node
         for uid, node in manifest["nodes"].items()
-        if node["resource_type"] in {"model", "test"}
+        if node["resource_type"] in {"model", "seed", "test"}
     }
     models = {
         node["name"] for node in nodes.values() if node["resource_type"] == "model"
     }
-    if models != MODELS or not any(
-        n["resource_type"] == "test" for n in nodes.values()
+    seeds = {n["name"] for n in nodes.values() if n["resource_type"] == "seed"}
+    if (
+        models != MODELS
+        or seeds != SEEDS
+        or not any(n["resource_type"] == "test" for n in nodes.values())
     ):
-        raise RuntimeError("dbt must contain all three models and enabled tests")
+        raise RuntimeError(
+            "dbt must contain all three models, the holiday seed and enabled tests"
+        )
     actual = {result["unique_id"]: result for result in results["results"]}
     if len(actual) != len(results["results"]) or actual.keys() != nodes.keys():
         raise RuntimeError("dbt did not execute every enabled model and test")
     for uid, node in nodes.items():
-        expected = "success" if node["resource_type"] == "model" else "pass"
+        expected = "pass" if node["resource_type"] == "test" else "success"
         if actual[uid]["status"] != expected:
             raise RuntimeError("dbt model or test failed, warned or was skipped")
-    return len(nodes) - len(MODELS)
+    return sum(n["resource_type"] == "test" for n in nodes.values())
 
 
 def verify_models(connection):
@@ -271,7 +277,10 @@ def run():
                 )
                 count = validate_results(manifest, results)
                 verify_models(connection)
-                print(f"Verified 3 analytical tables and {count} dbt tests", flush=True)
+                print(
+                    f"Verified 3 analytical tables, holiday seed and {count} dbt tests",
+                    flush=True,
+                )
             finally:
                 connection.rollback()
                 reset_schemas(connection)
