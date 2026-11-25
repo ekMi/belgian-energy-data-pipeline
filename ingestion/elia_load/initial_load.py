@@ -1,48 +1,22 @@
-import csv
 from pathlib import Path
 
-from ingestion.common.database import get_connection
 from ingestion.common.logger import get_logger
+from ingestion.elia_load.load import load_ods001
 from ingestion.elia_load.validate import validate_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ODS_PATH = PROJECT_ROOT / "data" / "raw" / "ods001.csv"
-
-
-INSERT_SQL = """
-    INSERT INTO raw.elia_load (
-        datetime, resolution_code, total_load,
-        most_recent_forecast, most_recent_p10, most_recent_p90,
-        day_ahead_6pm_forecast, day_ahead_6pm_p10,
-        day_ahead_6pm_p90, week_ahead_forecast
-    )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (datetime) DO UPDATE SET
-        resolution_code = EXCLUDED.resolution_code,
-        total_load = EXCLUDED.total_load,
-        most_recent_forecast = EXCLUDED.most_recent_forecast,
-        most_recent_p10 = EXCLUDED.most_recent_p10,
-        most_recent_p90 = EXCLUDED.most_recent_p90,
-        day_ahead_6pm_forecast = EXCLUDED.day_ahead_6pm_forecast,
-        day_ahead_6pm_p10 = EXCLUDED.day_ahead_6pm_p10,
-        day_ahead_6pm_p90 = EXCLUDED.day_ahead_6pm_p90,
-        week_ahead_forecast = EXCLUDED.week_ahead_forecast
-"""
-
 logger = get_logger(__name__)
 
 
-def load_ods001(path: Path):
+def run_initial_load(path: Path):
+    logger.info("Starting initial load")
+
     rows = validate_csv(path)
+    load_ods001(rows)
 
-    logger.info("Starting database load")
-
-    with get_connection() as conn:
-        for row in rows:
-            conn.execute(INSERT_SQL, row)
-
-    logger.info("Load completed: %s rows", len(rows))
+    logger.info("Initial load completed")
 
 
 if __name__ == "__main__":
-    load_ods001(ODS_PATH)
+    run_initial_load(ODS_PATH)
