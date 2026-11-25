@@ -2,6 +2,8 @@ import csv
 from pathlib import Path
 
 from ingestion.common.database import get_connection
+from ingestion.common.logger import get_logger
+from ingestion.elia_load.validate import validate_csv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ODS_PATH = PROJECT_ROOT / "data" / "raw" / "ods001.csv"
@@ -27,18 +29,19 @@ INSERT_SQL = """
         week_ahead_forecast = EXCLUDED.week_ahead_forecast
 """
 
+logger = get_logger(__name__)
+
 
 def load_ods001(path: Path):
+    rows = validate_csv(path)
+
+    logger.info("Starting database load")
+
     with get_connection() as conn:
-        with open(path, encoding="utf-8", newline="") as csvfile:
-            csv_reader = csv.reader(csvfile, delimiter=";")
-            next(csv_reader)  # Skip header
+        for row in rows:
+            conn.execute(INSERT_SQL, row)
 
-            for row in csv_reader:
-                row = [value if value != "" else None for value in row]
-                conn.execute(INSERT_SQL, row)
-
-    print("ODS001 loaded successfully.")
+    logger.info("Load completed: %s rows", len(rows))
 
 
 if __name__ == "__main__":
